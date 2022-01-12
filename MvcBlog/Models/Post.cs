@@ -9,6 +9,7 @@ namespace MvcBlog.Models
     public class Post
     {
         public int Id { get; set; }
+        public int CategoryID { get; set; }
 
         [Display(Name = "Заголовок")]
         public string Title { get; set; }
@@ -22,5 +23,7 @@ namespace MvcBlog.Models
 
         [Display(Name = "Текст")]
         public string Text { get; set; }
+
+        
     }
 }

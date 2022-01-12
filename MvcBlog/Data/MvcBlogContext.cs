@@ -15,5 +15,11 @@ namespace MvcBlog.Data
         }
 
         public DbSet<Post> Post { get; set; }
+
+        public DbSet<MvcBlog.Models.Comments> Comments { get; set; }
+
+        public DbSet<MvcBlog.Models.Categories> Categories { get; set; }
+
+        public DbSet<MvcBlog.Models.Users> Users { get; set; }
     }
 }
