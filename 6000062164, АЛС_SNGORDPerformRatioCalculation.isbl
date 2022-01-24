@@ -1,0 +1,959 @@
+  //код частично почищен от комментарием в рамках ДИ 6000044745 28.01.2021
+  // Массив, содержаший имена работников, которые не будут выводиться в отчете
+  ExcludedWorkers = Arrayof('Чонка Любовь Тимофеевна')
+
+  Object.Environment.add('RightsCheck'; true)
+  //  Получение ИД структ.подразделения ПУ «СургутАСУнефть»
+  OilBusinessUnitCode = GetAssignedConst('SNGORDSurgutASUOilBusinessUnitCode')
+  OilBusinessUnitID = SNGGetReqValue('SNGBusinessUnits'; OilBusinessUnitCode; Sysreq_id)
+     
+  //  Получение ИД орг.единицы "Руководство"
+  ManagementStructureUnitCode = GetAssignedConst('SNGORDManagementStructureUnit') 
+  ManagementStructureUnitID = SNGGetReqValue('ПОД'; ManagementStructureUnitCode; Sysreq_id)         
+
+  //  Получение ИД орг.единицы "Аппарат при руководстве"
+  LeadershipApparatusCode = GetAssignedConst('SNGORDLeadershipApparatus')
+  LeadershipApparatusID = SNGGetReqValue('ПОД'; LeadershipApparatusCode; Sysreq_id) 
+
+  //  Получение ИД орг.единиц "Аппарат управления"
+  AdministrationStructureCodes = GetAssignedConst('SNGORDASUAdministrationBUnitCode')
+  AdministrationStructureIDs = ''
+  StrIDs = CreateStringList()
+  foreach AdministrationStructureCode in CSubString(AdministrationStructureCodes; '|')
+    AdministrationStructureID = SNGGetReqValue('ПОД'; AdministrationStructureCode; Sysreq_id)
+    if Assigned(AdministrationStructureID)
+      AdministrationStructureIDs = AddSubString(AdministrationStructureID; AdministrationStructureIDs; ',')
+      StrIDs.add(AdministrationStructureID)
+    endif                       
+  endforeach     
+  
+  //Группировка по подчиненным орг единицам ПУ "СургутАСУНефть"     
+  TableName = 'SNGORDPerformRatioCalculation'
+  TableNameWithCurrentUserName = GetTableNameWithCurrentUserName(TableName)
+  DropTable(TableNameWithCurrentUserName) 
+  // Создать временную таблицу 
+  SQL(Format("create table %s 
+              ( DepID int not null,
+                HighDepID int null,
+                HighDepName varchar(512) null)"
+      ; TableNameWithCurrentUserName))
+  DepQuery = "select Analit from dbo.MBanalit with(nolock) where XRecStat = '+' and Podr is not NULL and SNGBusinessUnit = " & OilBusinessUnitID & " and Vid =" & ИДТипСпр('ПОД')
+  OilUnitID = SQL("select Podr2 from dbo.MBAnalit with(nolock) where Vid = " & ИДТипСпр('ПОД') & " and Analit = " & ManagementStructureUnitID) 
+  foreach DepartID in CSQL(DepQuery)
+    HighDep = SQL(Format("
+      WITH CTE(Podr, Analit, NestingLevel, NameAn)
+      AS
+      (
+        SELECT P.Podr, P.Analit, 1, P.NameAn FROM MBAnalit AS P with(nolock) WHERE P.Vid=%0:s and P.Analit=%1:s   --Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)
+        UNION ALL
+        SELECT P.Podr, P.Analit, (NestingLevel + 1), P.NameAn FROM MBAnalit AS P with(nolock)                     --Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)
+        INNER JOIN CTE ON CTE.Podr = P.Analit and P.Podr is not NULL
+      )            
+      SELECT top 1 Analit, NameAn FROM CTE with(nolock) order by NestingLevel desc";                              //Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)
+      ArrayOf(ИДТипСпр('ПОД'); DepartID)))
+    HighDepID = SubString(HighDep; ';'; 1)
+    HighDepName = SubString(HighDep; ';'; 2) 
+    SQL(Format("insert into %0:s values (%1:s, %2:s, '%3:s')";
+      ArrayOf(TableNameWithCurrentUserName; DepartID; HighDepID; HighDepName))) 
+// BGN   Skivu_AI 11.09.2019 6000011097 Формирование справки ОРД
+//    AnotherStrIDs = CreateStringList()
+//    if AnotherStrIDs.IndexOf(HighDepID) < 0
+//      AnotherStrIDs.Add(HighDepID) 
+//    endif  
+// END Skivu_AI 11.09.2019 6000011097 Формирование справки ОРД  
+  endforeach
+  
+  RRC = CreateReference('SNGORDRRC')
+  Assigns = CreateReference('SNGORDRRCAssignments')                 
+  Workers = CreateReference('РАБ') 
+  Divisions = CreateReference('ПОД') 
+  RRCName = RRC.Tablename
+  DivisionsName = Divisions.Tablename
+  AssignsName = Assigns.Tablename
+  WorkersName = Workers.Tablename
+  CalendRefID = ИдТипСпр('КРВ')
+  AssignsTableData = Arrayof()
+  
+/*
+  // Собирается список орг. единц, которые должны выводится в разделе “Комплексы, отделы, службы, участки” 
+  AnotherStrIDs = CreateStringList()
+  AW = Divisions.AddWhere('SNGBusinessUnit=' & OilBusinessUnitID)
+  Divisions.Open
+  foreach Div in Divisions
+    DivID = Div.Sysreq_Id
+//    if (AnotherStrIDs.Indexof(DivID) == -1) and (StrIDs.Indexof(DivID) == -1) and (not Содержит(Arrayof(ManagementStructureUnitID; LeadershipApparatusID); DivID))
+    if (StrIDs.Indexof(DivID) == -1) and (not Содержит(Arrayof(ManagementStructureUnitID; LeadershipApparatusID); DivID))
+      AnotherStrIDs.add(DivID)
+    endif
+  endforeach
+  Divisions.DelWhere(AW)
+  Divisions.Close   */
+  
+  DivisionsUpLevelDivField = 'Divisions' & '.' & Divisions.Requisites('Подразделение').FieldName 
+  WorkersPodField = 'Workers' & '.' & Workers.Requisites('Подразделение').FieldName
+  WorkersBUnitField = 'Workers' & '.' & Workers.Requisites('SNGBusinessUnit').FieldName
+  DivBUnitField = 'Divisions' & '.' & Divisions.Requisites('SNGBusinessUnit').FieldName 
+  DivBUnitField2 = 'Divisions2' & '.' & Divisions.Requisites('SNGBusinessUnit').FieldName       
+  AssignsRRCFieldName = 'Assigns' & '.' & Assigns.Requisites(SYSREQ_LEADER_REFERENCE).FieldName
+  RegField = 'Assigns' & '.' & Assigns.Requisites('Дата2').FieldName     
+  AssignAuthorField = 'Assigns' & '.' & Assigns.Requisites('Employee').FieldName
+  AssignPerformersDataSet = Assigns.DetailDataSet(1)
+  AssignPerformersDataSetName = AssignPerformersDataSet.Tablename
+  AssignDivisionField = 'AssignsPerformers' & '.' & AssignPerformersDataSet.Requisites('ПодразделениеТ').FieldName
+  AssignPerformerField = 'AssignsPerformers' & '.' & AssignPerformersDataSet.Requisites('PerformerT').FieldName
+  AssignCompleteDetField = 'AssignsPerformers' & '.' & AssignPerformersDataSet.Requisites('ДатаТ').FieldName 
+  AssignControlerField = 'Assigns' & '.' & Assigns.Requisites('Работник').FieldName  
+  AssignCompleteDateField = 'Assigns' & '.' & Assigns.Requisites('Дата3').FieldName
+  RRCLowerRRCField = 'RRC' & '.' & RRC.Requisites('ИДСпр').FieldName
+  RRCRegNumberField = 'RRC' & '.' & RRC.Requisites('Дополнение').FieldName
+  AssignControlTypeField = 'Assigns' & '.' & Assigns.Requisites('SNGControlType').FieldName
+  
+  // Имя справочника РКК нижнего уровня
+  TargetRef = 'MBAnalit'     
+  
+  // Обработка запроса параметров для веб-доступа
+  Action = ValueByName(Sender.Params; '_action'; '')
+  if Action == "getparams"
+    ResultXML = Format('
+      <Params>
+        <Param name="PeriodStart" caption="%s" type="Date" defaultvalue="%s" required="true"/>
+        <Param name="PeriodEnd" caption="%s" type="Date" defaultvalue="%s" required="true"/>
+      </Params>'; 
+      ArrayOf('Срок исполнения с'; НачМес(0); 'Срок исполнения по'; КонМес(0)))
+    //Установка параметра XML-файла описания
+    Sender.Params.SetVar("_result"; ResultXML)
+    //Завершение выполнения расчета
+    Exit()  
+  endif
+   
+  if IsWebRuntimeContext()  
+    PeriodStart = ValueByName(Sender.Params; "PeriodStart"; '')
+    PeriodEnd = ValueByName(Sender.Params; "PeriodEnd"; '')
+  else
+    Labels = '*Срок исполнения с|*Срок исполнения по'
+    Defaults = НачМес(0) & '|' & КонМес(0) 
+    Values = 'дата|дата'       
+    Result = Inputdialog(Labels; Defaults;Values)
+    PeriodStart = Substring(Result; '|'; 1)                                                                                                         
+    PeriodEnd = Substring(Result; '|'; 2)
+  endif
+  
+  Sum1 = 0
+  Sum2 = 0  
+  Sum3 = 0
+  Sum4 = 0  
+  
+  Addwhere0 = "((DateDiff(day,'" & PeriodStart & "'," & RegField & ")>=0) and (DateDiff(day," & RegField & ",'" & PeriodEnd & "')>=0))"
+ 
+  // Запрос на всех работников "Руководства"
+  Query =        
+  Format("--ОРД/Расчет отчета SNGORDPerformRAtioCalculation
+          select 
+            Workers.analit    
+          from
+            %0:s Workers with(nolock)     --Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)                                 
+          where (%1:s = %2:s) and (%3:s = %4:s) and Workers.Sost = 'Д' and Workers.Vid = %5:s and Workers.Xrecstat = '+'    
+  ";Arrayof(WorkersName; WorkersPodField; ManagementStructureUnitID; WorkersBUnitField; OilBusinessUnitID;Workers.ComponentID))
+  EmptyArrays = Arrayof()
+   
+  foreach e in CSubString(SQL(Query);'|')
+    EmptyArrays = AddUniqueElementToArray(EmptyArrays; e)
+  endforeach
+   
+  //первый рабочий день 
+  FindNextWorkDay = Format("select top 1 Date from dbo.MBAnValR with(nolock) where vid = %0:s and datediff(day, Assigns.Date2, date) >= 0 and FLOATNUMBER3 > 0 order by date asc"; ИДТипСпр('КРВ'))       //Biryuchkova_AA 28.01.2021 6000044745    
+  
+  // Запрос и добавление информации по орг. единице "Руководство"
+  Query =        
+  Format("--ОРД/Расчет отчета SNGORDPerformRAtioCalculation
+          select 
+            manager.Analit, 
+            Count(distinct rrcrec), 
+            Count(distinct assignment), 
+            isnull(Sum(FinalDate),0), 
+            isnull(Sum(FinalPeriod),0), 
+            manager.NameAn
+            --select manager.Analit, Count(distinct rrcrec), Count(distinct assignmentPerf), isnull(Sum(FinalDate),0), isnull(Sum(FinalPeriod),0), manager.NameAn
+          
+          from dbo.MBAnalit manager with(nolock) 
+            left join (
+                        select 
+                          Workers.analit, 
+                          RRC.Analit as rrcrec, 
+                          Assigns.Analit as assignment,
+                          case 
+                            when AssignsPerformers.SNGMessageStateT = '4' then 1 else 0 
+                          end as FinalDate,
+                          case when AssignsPerformers.SNGMessageStateT = '4' and 
+                                (CONVERT(date,
+                                (select MIN(t.d) from
+                                ((select doc.SNGDate d 
+                                  FROM dbo.SBEDoc doc with(nolock)
+                                  WHERE doc.XRecID = CASE WHEN CHARINDEX(',',AssignsPerformers.AdditionT)>0 
+                                  THEN cast(LEFT(AssignsPerformers.AdditionT,CHARINDEX(',',AssignsPerformers.AdditionT)-1) AS int) 
+                                  ELSE CAST(AssignsPerformers.AdditionT AS int) end)
+                                  union all
+                                  --select isnull(AssignsPerformers.DataT, Assigns.Date2) d)t),104) <= CONVERT(date,Assigns.Date2,104)) then 1 else 0 end as FinalPeriod                   /*Bershinskaya_AV ДИ600017997 добавлен ISNULL*/ /* Biryuchkova_AA 28.01.2021 6000044745*/   
+                                  select isnull(AssignsPerformers.DataT, (%17:s)) d)t),104) <= CONVERT(date,(%17:s),104)) then 1 else 0 end as FinalPeriod                                 /*Biryuchkova_AA 28.01.2021 6000044745*/
+
+                        from
+                          --BGN Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)  
+                          %2:s Assigns  with(nolock)                                                                                            
+                          left join %3:s RRC with(nolock) on RRC.Analit = %0:s                              
+                          left join %4:s AssignsPerformers with(nolock) on AssignsPerformers.Analit = Assigns.Analit
+                          --END Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)   
+                            and AssignsPerformers.SNGMessageStateT not in ('D', '5', '6', '7', '9') 
+                            and AssignsPerformers.SNGMessageStateT is not null
+                          join %9:s Workers with(nolock) on Workers.Analit = %8:s                                         --Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)  
+                        
+                        where %6:s
+                          and Assigns.XRecStat = '+' 
+                          and (%7:s = 'Y') 
+                          and (%10:s = %12:s) 
+                          and (%13:s = %14:s) 
+                          and Assigns.SNGORDRRCAssignmentT in ('R', 'C', 'D')
+                          and RRC.XRecStat = '+' 
+                          and exists(select r.Analit from dbo.MBAnalit r with(nolock) where r.Analit = RRC.IDSpr and r.XRecStat = '+')
+                      ) as data on data.Analit = manager.Analit
+          where 
+            manager.Vid = %16:s 
+            and manager.SNGBusinessUnit = %14:s 
+            and manager.Podr = %12:s 
+            and manager.Sost = 'Д' 
+          group by manager.Analit, manager.NameAn 
+          order by manager.NameAn
+  ";Arrayof(AssignsRRCFieldName; 
+            AssignCompleteDetField; 
+            AssignsName; 
+            RRCName; 
+            AssignPerformersDataSetName;
+            RRCLowerRRCField; 
+            Addwhere0; 
+            AssignControlTypeField; 
+            AssignPerformerField; 
+            WorkersName; 
+            WorkersPodField;
+            RegField; 
+            ManagementStructureUnitID; 
+            WorkersBUnitField; 
+            OilBusinessUnitID; 
+            CalendRefID; 
+            Workers.ComponentID; 
+            FindNextWorkDay))                                             //Biryuchkova_AA 28.01.2021 6000044745
+
+  StringArray = Arrayof('1.'; 'Руководство';' ';' ';' ';' ';' ';' ')
+  TableData = Arrayof(StringArray)
+  Counter = 1    
+  //edittext(Query)                                      
+  foreach record in CSQl(Query;;'|')
+    WorkerId = Substring(record; '|'; 1)
+    if Assigned(WorkerId)
+      Label = SNGGetReqValue('РАБ'; SNGORDGetRecordCodeFromID(WorkerID); 'Дополнение')
+      AssignsCount = Substring(record; '|'; 3)
+      DoneCount = Substring(record; '|'; 4)
+      TimelyDoneCount = Substring(record; '|'; 5)             
+      if AssignsCount = 0
+        Koef1 = 1
+        Koef2 = 1
+      else
+        Koef1 = DoneCount / AssignsCount            
+        Koef2 = TimelyDoneCount / AssignsCount              
+      endif
+      Label = SNGИОФамилияRTFSQL(Label)
+      StringArray = Arrayof('1.' & Counter; Label; Substring(record; '|'; 2); AssignsCount; DoneCount; TimelyDoneCount; ФМТЧСЛ('5.2'; Koef1); ФМТЧСЛ('5.2'; Koef2))
+      // Удаление работника из массива для пустых строк
+      cnt = 0
+      foreach j in CArrayElement(EmptyArrays)
+        if Trim(j) == Trim(Workerid)
+          if cnt <> ArrayHighBound(EmptyArrays)
+            Temp = EmptyArrays[ArrayHighBound(EmptyArrays)]
+            EmptyArrays[cnt] = Temp
+            EmptyArrays = ArrayReDim(EmptyArrays; 1; 0; ArrayHighBound(EmptyArrays) - 1)
+          else  
+            if ArrayHighBound(EmptyArrays) > 0
+              EmptyArrays = ArrayReDim(EmptyArrays; 1; 0; ArrayHighBound(EmptyArrays) - 1)
+            else  
+              EmptyArrays = Arrayof()
+            endif
+          endif  
+        endif
+        cnt = cnt + 1
+      endforeach
+      
+      TableData = AddElementToArray(TableData; StringArray)
+      Counter = Counter + 1    
+      // Пополнение переменных с суммами   
+      Sum1 = Sum1 + Substring(record; '|'; 2)
+      Sum2 = Sum2 + AssignsCount  
+      Sum3 = Sum3 + DoneCount
+      Sum4 = Sum4 + TimelyDoneCount   
+    endif
+  endforeach       
+  // Добавление пустых строк если остались
+  if ArrayHighBound(EmptyArrays) <> -1
+    foreach j in CArrayElement(EmptyArrays)
+      if Assigned(j)
+        Label = SNGGetReqValue('РАБ'; SNGORDGetRecordCodeFromID(j); 'Дополнение')
+        Label = SNGИОФамилияRTFSQL(Label)
+        StringArray = Arrayof('1.' & Counter; Label; 0; 0; 0; 0; 1; 1)
+        TableData = AddElementToArray(TableData; StringArray)
+      endif   
+      Counter = Counter + 1       
+    endforeach
+  endif 
+  
+  // Запрос на все подразделения "Аппарата при руководстве"
+  Query =        
+  Format("--ОРД/Расчет отчета SNGORDPerformRAtioCalculation
+          select 
+            Divs.analit    
+          from dbo.MBAnalit Divs with(nolock)                                       
+          where 
+            (Divs.Podr = %0:s) 
+            and Divs.Vid = %1:s 
+            and Divs.Sost = 'Д' 
+  "; Arrayof(LeadershipApparatusID;Divisions.ComponentID))
+  EmptyArrays = Arrayof()
+  foreach e in CSubString(SQL(Query);'|')
+    EmptyArrays = AddUniqueElementToArray(EmptyArrays; e)
+  endforeach       
+               
+
+  // Запрос и добавление информации по орг. единице "Аппарат при руководстве" (ПОДРАЗДЕЛЕНИЯ)
+  Query =        
+  Format("--ОРД/Расчет отчета SNGORDPerformRAtioCalculation
+          --select apr.Analit, Count(distinct rrcrec), Count(distinct assignment), isnull(Sum(FinalDate),0), isnull(Sum(FinalPeriod),0), apr.Label
+          select 
+            apr.Analit, 
+            Count(distinct rrcrec), 
+            Count(distinct assignmentPerf), 
+            isnull(Sum(FinalDate),0), 
+            isnull(Sum(FinalPeriod),0), apr.Label
+          from
+          (
+            select ROW_NUMBER() OVER(ORDER BY org.NameAn) AS Row, org.Analit, org.NameAn, org.Vid, org.Section1 as Label   
+            from dbo.MBAnalit org with(nolock)                                                                                              
+            where org.Vid = %17:s and org.Podr = %12:s and org.Sost = 'Д'                                                  
+          ) as apr left join                                                                                               
+          (
+            select 
+              Divs.analit, RRC.Analit as rrcrec, Assigns.Analit as assignment,
+              AssignsPerformers.XRecID as assignmentPerf,
+              case when AssignsPerformers.SNGMessageStateT = '4' then 1 else 0 end as FinalDate,
+              case when AssignsPerformers.SNGMessageStateT = '4' and
+              (CONVERT(date,
+               (select MIN(t.d)
+                from
+               ((select doc.SNGDate d 
+               FROM SBEDoc doc with(nolock)
+               WHERE doc.XRecID = CASE WHEN CHARINDEX(',',AssignsPerformers.AdditionT)>0 
+               THEN cast(LEFT(AssignsPerformers.AdditionT,CHARINDEX(',',AssignsPerformers.AdditionT)-1) AS int) 
+               ELSE CAST(AssignsPerformers.AdditionT AS int) end)
+               union all
+               --select isnull(AssignsPerformers.DataT, Assigns.Date2) d)t) ,104) <= CONVERT(date,Assigns.Date2,104)) then 1 else 0 end as FinalPeriod, '' as Label          /*Bershinskaya_AV ДИ600017997 добавлен ISNULL*/  /* Biryuchkova_AA 28.01.2021 6000044745*/
+               select isnull(AssignsPerformers.DataT, (%19:s)) d)t) ,104) <= CONVERT(date,(%19:s),104)) then 1 else 0 end as FinalPeriod, '' as Label                        /* Biryuchkova_AA 28.01.2021 6000044745*/
+              
+            from
+              --BGN Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)  
+              %2:s Assigns with(nolock)                                      
+              left join  %3:s RRC with(nolock) on RRC.Analit = %0:s
+              left join %4:s AssignsPerformers with(nolock) on AssignsPerformers.Analit = Assigns.Analit
+              --END Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)   
+                and AssignsPerformers.SNGMessageStateT not in ('D', '5', '6', '7', '9') 
+                and AssignsPerformers.SNGMessageStateT is not null
+              join MBAnalit Divs with(nolock) on Divs.Analit = %8:s                                     --Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)  
+            
+            where %6:s 
+              and Assigns.XRecStat = '+' 
+              and (%7:s = 'Y') 
+              and (Divs.Podr = %12:s) 
+              and Assigns.SNGORDRRCAssignmentT in ('R', 'C', 'D') 
+              --and (%13:s = %14:s)
+              and RRC.XRecStat='+' 
+              and exists(select r.Analit from dbo.MBAnalit r with(nolock) where r.Analit = RRC.IDSpr and r.XRecStat = '+')
+              and (Assigns.SNGRRCAssignment is null or not exists 
+                                    (select distinct ass.Analit
+                                    from dbo.MBAnalit ass with(nolock), MBAnalit rkk2 with(nolock), dbo.MBAnValR ex with(nolock) 
+                                    where ass.Vid = %18:s
+                                        and ass.HighLvl = rkk2.Analit
+                                        and rkk2.Analit = RRC.Analit  
+                                        and Ass.XRecStat = '+'
+                                        and ex.SNGMessageStateT is not null
+                                        and ex.Analit = Ass.Analit
+                                        and ass.Analit = Assigns.SNGRRCAssignment 
+                                        and ex.PodrT = Divs.Analit
+                                      )) 
+            ) as data on data.Analit = apr.Analit 
+        
+          group by apr.Analit, apr.Row, apr.NameAn, apr.Label
+          order by apr.Row, apr.NameAn
+  ";Arrayof(AssignsRRCFieldName; 
+            AssignCompleteDetField; 
+            AssignsName; 
+            RRCName; 
+            AssignPerformersDataSetName;
+            RRCLowerRRCField; 
+            Addwhere0; 
+            AssignControlTypeField; 
+            AssignDivisionField; 
+            WorkersName; 
+            WorkersPodField;
+            RegField; 
+            LeadershipApparatusID; 
+            WorkersBUnitField; 
+            OilBusinessUnitID; 
+            CalendRefID; 
+            Workers.ComponentID; 
+            Divisions.ComponentID; 
+            ИДТипСпр('SNGORDRRCAssignments'); 
+            FindNextWorkDay))                                                   //Biryuchkova_AA 28.01.2021 6000044745
+  StringArray = Arrayof('2.'; 'Аппарат при руководстве';' ';' ';' ';' ';' ';' ')
+  TableData = AddElementToArray(TableData; StringArray)
+  Counter = 1
+  //edittext(Query)
+  foreach record in CSQl(Query;;'|')
+    WorkerId = Substring(record; '|'; 1)
+    if Assigned(WorkerId)
+      //Label = Substring(record; '|'; 6) 
+      Label = Trim(SNGGetReqValue('ПОД'; SNGORDGetRecordCodeFromID(WorkerID); 'Section1'))
+      if not Содержит(ExcludedWorkers; Label)
+        AssignsCount = Substring(record; '|'; 3)
+        DoneCount = Substring(record; '|'; 4)
+        TimelyDoneCount = Substring(record; '|'; 5)             
+        if AssignsCount = 0
+          Koef1 = 1
+          Koef2 = 1
+        else
+          Koef1 = DoneCount / AssignsCount
+          Koef2 = TimelyDoneCount / AssignsCount              
+        endif
+        StringArray = Arrayof('2.' & Counter; Label; Substring(record; '|'; 2); AssignsCount; DoneCount; TimelyDoneCount; ФМТЧСЛ('5.2'; Koef1); ФМТЧСЛ('5.2'; Koef2))
+        // Удаление подразделения из массива для пустых строк
+        cnt = 0
+        foreach j in CArrayElement(EmptyArrays)
+          if Trim(j) == Trim(Workerid)
+             if cnt <> ArrayHighBound(EmptyArrays)
+               Temp = EmptyArrays[ArrayHighBound(EmptyArrays)]
+               EmptyArrays[cnt] = Temp
+               EmptyArrays = ArrayReDim(EmptyArrays; 1; 0; ArrayHighBound(EmptyArrays) - 1)
+             else  
+                 if ArrayHighBound(EmptyArrays) > 0
+                     EmptyArrays = ArrayReDim(EmptyArrays; 1; 0; ArrayHighBound(EmptyArrays) - 1)
+                 else  
+                  EmptyArrays = Arrayof()
+                 endif
+             endif  
+          endif
+          cnt = cnt + 1
+        endforeach 
+        TableData = AddElementToArray(TableData; StringArray)
+        Counter = Counter + 1     
+        // Пополнение переменных с суммами   
+        Sum1 = Sum1 + Substring(record; '|'; 2)
+        Sum2 = Sum2 + AssignsCount  
+        Sum3 = Sum3 + DoneCount
+        Sum4 = Sum4 + TimelyDoneCount          
+      endif        
+    endif
+   endforeach  
+
+  // Добавление пустых строк если остались
+  if ArrayHighBound(EmptyArrays) <> -1
+   foreach j in CArrayElement(EmptyArrays)
+     if Assigned(j)
+        Label = SNGGetReqValue('РАБ'; SNGORDGetRecordCodeFromID(j); 'Наименование')
+        if Trim(Label) <<>> ''
+          StringArray = Arrayof('2.' & Counter; Label; 0; 0; 0; 0; 1; 1)
+          TableData = AddElementToArray(TableData; StringArray)
+        endif 
+     endif   
+     Counter = Counter + 1       
+   endforeach
+  endif 
+
+
+  // Запрос на всех работников "Аппарата при руководстве"
+  Query =        
+  Format("--ОРД/Расчет отчета SNGORDPerformRAtioCalculation
+          select 
+            Workers.analit    
+          from
+            %0:s Workers with(nolock) --Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)                                        
+          where (%1:s = %2:s) 
+            and Workers.Vid = %3:s 
+            and Workers.Sost = 'Д' 
+  ";Arrayof(WorkersName; WorkersPodField; LeadershipApparatusID; Workers.ComponentID))
+  EmptyArrays = Arrayof()
+  
+  foreach e in CSubString(SQL(Query);'|')
+    EmptyArrays = AddUniqueElementToArray(EmptyArrays; e)
+  endforeach     
+
+  // Запрос и добавление информации по орг. единице "Аппарат при руководстве" (РАБОТНИКИ)
+  
+  Query =        
+  Format("--ОРД/Расчет отчета SNGORDPerformRAtioCalculation
+        --select apr.Analit, Count(distinct rrcrec), Count(distinct assignment), isnull(Sum(FinalDate),0), isnull(Sum(FinalPeriod),0), apr.Label
+        select 
+          apr.Analit, 
+          Count(distinct rrcrec), 
+          Count(distinct assignmentPerf), 
+          isnull(Sum(FinalDate),0), 
+          isnull(Sum(FinalPeriod),0), 
+          apr.Label
+        from
+        (
+          select ROW_NUMBER() OVER(ORDER BY rab.NameAn) AS Row, rab.Analit, rab.NameAn, rab.Vid, rab.Dop as Label   
+          from dbo.MBAnalit rab with(nolock)                                                                                        
+          where rab.Vid = %16:s                                                                                    
+            and rab.Podr = %12:s                                                                                      
+            and rab.Sost = 'Д'                                                                                       
+        ) as apr left join                                                                                          
+        (
+          select 
+            Workers.analit, RRC.Analit as rrcrec, Assigns.Analit as assignment, 
+            AssignsPerformers.XRecID as assignmentPerf,
+            case when AssignsPerformers.SNGMessageStateT = '4' then 1 else 0 end as FinalDate,
+            case when AssignsPerformers.SNGMessageStateT = '4' and
+            (CONVERT(date,
+             (select MIN(t.d)
+              from
+             ((select doc.SNGDate d 
+             FROM dbo.SBEDoc doc with(nolock)
+             WHERE doc.XRecID = CASE WHEN CHARINDEX(',',AssignsPerformers.AdditionT)>0 
+             THEN cast(LEFT(AssignsPerformers.AdditionT,CHARINDEX(',',AssignsPerformers.AdditionT)-1) AS int) 
+             ELSE CAST(AssignsPerformers.AdditionT AS int) end)
+             union all
+             --select isnull(AssignsPerformers.DataT, Assigns.Date2) d)t),104) <= CONVERT(date,Assigns.Date2,104)) then 1 else 0 end as FinalPeriod                        /*Bershinskaya_AV ДИ600017997 добавлен ISNULL*/  /* Biryuchkova_AA 28.01.2021 6000044745*/
+              select isnull(AssignsPerformers.DataT, (%17:s)) d)t),104) <= CONVERT(date,(%17:s),104)) then 1 else 0 end as FinalPeriod                                     /* Biryuchkova_AA 28.01.2021 6000044745*/                                 
+          --BGN Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)  
+          from %2:s Assigns  with(nolock)                                     
+            left join %4:s AssignsPerformers with(nolock) on AssignsPerformers.Analit = Assigns.Analit
+          --END Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)          
+              and AssignsPerformers.SNGMessageStateT not in ('D', '5', '6', '7', '9') 
+              and AssignsPerformers.SNGMessageStateT is not null
+            --BGN Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)  
+            join %9:s Workers with(nolock) on Workers.Analit = %8:s    
+            left join  %3:s RRC with(nolock) on RRC.Analit = %0:s
+            --END Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)  
+          
+          where %6:s 
+            and Assigns.XRecStat = '+' 
+            and (%7:s = 'Y') 
+            and (%10:s = %12:s) 
+            and Assigns.SNGORDRRCAssignmentT in ('R', 'C', 'D') 
+            --and (%13:s=%14:s)
+            and RRC.XRecStat='+' 
+            and exists(select r.Analit from MBAnalit as r where r.Analit = RRC.IDSpr and r.XRecStat = '+')
+        ) as data on data.Analit = apr.Analit 
+        group by apr.Analit, apr.Row, apr.NameAn, apr.Label
+        order by apr.Row, apr.NameAn
+  ";Arrayof(AssignsRRCFieldName; 
+            AssignCompleteDetField; 
+            AssignsName; 
+            RRCName; 
+            AssignPerformersDataSetName;
+            RRCLowerRRCField; 
+            Addwhere0; 
+            AssignControlTypeField; 
+            AssignPerformerField; 
+            WorkersName; 
+            WorkersPodField;
+            RegField; 
+            LeadershipApparatusID; 
+            WorkersBUnitField; 
+            OilBusinessUnitID; 
+            CalendRefID; 
+            Workers.ComponentID; 
+            FindNextWorkDay))                                                   //Biryuchkova_AA 28.01.2021 6000044745
+  //StringArray = Arrayof('2.'; 'Аппарат при руководстве';' ';' ';' ';' ';' ';' ')
+  //TableData = AddElementToArray(TableData; StringArray)
+  //Counter = 1
+  //edittext(Query)
+  foreach record in CSQl(Query;;'|')
+    WorkerId = Substring(record; '|'; 1)
+    if Assigned(WorkerId)
+      Label = Trim(SNGGetReqValue('РАБ'; SNGORDGetRecordCodeFromID(WorkerID); 'Дополнение'))
+      if not Содержит(ExcludedWorkers; Label)
+        AssignsCount = Substring(record; '|'; 3)
+        DoneCount = Substring(record; '|'; 4)
+        TimelyDoneCount = Substring(record; '|'; 5)             
+        if AssignsCount = 0
+          Koef1 = 1
+          Koef2 = 1
+        else
+          Koef1 = DoneCount / AssignsCount
+          Koef2 = TimelyDoneCount / AssignsCount              
+        endif
+        Label = SNGИОФамилияRTFSQL(Label)
+        StringArray = Arrayof('2.' & Counter; Label; Substring(record; '|'; 2); AssignsCount; DoneCount; TimelyDoneCount; ФМТЧСЛ('5.2'; Koef1); ФМТЧСЛ('5.2'; Koef2))
+        // Удаление работника из массива для пустых строк
+        cnt = 0
+        foreach j in CArrayElement(EmptyArrays)
+          if Trim(j) == Trim(Workerid)
+             if cnt <> ArrayHighBound(EmptyArrays)
+               Temp = EmptyArrays[ArrayHighBound(EmptyArrays)]
+               EmptyArrays[cnt] = Temp
+               EmptyArrays = ArrayReDim(EmptyArrays; 1; 0; ArrayHighBound(EmptyArrays) - 1)
+             else  
+                 if ArrayHighBound(EmptyArrays) > 0
+                     EmptyArrays = ArrayReDim(EmptyArrays; 1; 0; ArrayHighBound(EmptyArrays) - 1)
+                 else  
+                  EmptyArrays = Arrayof()
+                 endif
+             endif  
+          endif
+          cnt = cnt + 1
+        endforeach 
+        TableData = AddElementToArray(TableData; StringArray)
+        Counter = Counter + 1     
+        // Пополнение переменных с суммами   
+        Sum1 = Sum1 + Substring(record; '|'; 2)
+        Sum2 = Sum2 + AssignsCount  
+        Sum3 = Sum3 + DoneCount
+        Sum4 = Sum4 + TimelyDoneCount          
+      endif        
+      endif
+   endforeach  
+
+  // Добавление пустых строк если остались
+  if ArrayHighBound(EmptyArrays) <> -1
+    foreach j in CArrayElement(EmptyArrays)
+      if Assigned(j)
+        Label = SNGGetReqValue('РАБ'; SNGORDGetRecordCodeFromID(j); 'Наименование')
+        if Trim(Label) <<>> ''
+          StringArray = Arrayof('2.' & Counter; Label; 0; 0; 0; 0; 1; 1)
+          TableData = AddElementToArray(TableData; StringArray)
+        endif 
+      endif   
+      Counter = Counter + 1       
+    endforeach
+  endif  
+     
+   
+  // Запрос и добавление информации по орг. единице "Аппарат управления"
+  Query =        
+  Format("--ОРД/Расчет отчета SNGORDPerformRAtioCalculation
+        --select org.Analit, Count(distinct rrcrec), Count(distinct assignment), isnull(Sum(FinalDate),0), isnull(Sum(FinalPeriod),0), org.NameAn
+        select 
+          org.Analit, 
+          Count(distinct rrcrec), 
+          Count(distinct assignmentPerf), 
+          isnull(Sum(FinalDate),0), 
+          isnull(Sum(FinalPeriod),0), 
+          org.NameAn
+        from dbo.MBAnalit org with(nolock) 
+          left join 
+          (
+          select 
+            Divisions.analit, RRC.Analit as rrcrec, Assigns.Analit as assignment,
+            Assigns.SNGRRCAssignment as leader_assignment,
+            AssignsPerformers.XRecID as assignmentPerf, 
+            case when AssignsPerformers.SNGMessageStateT = '4' then 1 else 0 end as FinalDate,
+            case when AssignsPerformers.SNGMessageStateT = '4' and
+             (CONVERT(date,
+             (select MIN(t.d)
+              from
+             ((select doc.SNGDate d 
+             FROM SBEDoc doc with(nolock)
+             WHERE doc.XRecID = CASE WHEN CHARINDEX(',',AssignsPerformers.AdditionT)>0 
+             THEN cast(LEFT(AssignsPerformers.AdditionT,CHARINDEX(',',AssignsPerformers.AdditionT)-1) AS int) 
+             ELSE CAST(AssignsPerformers.AdditionT AS int) end)
+             union all
+             --select isnull(AssignsPerformers.DataT, Assigns.Date2) d)t),104) <= CONVERT(date,Assigns.Date2,104)) then 1 else 0 end as FinalPeriod                 /*Bershinskaya_AV ДИ600017997 добавлен ISNULL*/  /* Biryuchkova_AA 28.01.2021 6000044745*/
+             select isnull(AssignsPerformers.DataT, (%22:s)) d)t),104) <= CONVERT(date,(%22:s),104)) then 1 else 0 end as FinalPeriod                               /* Biryuchkova_AA 28.01.2021 6000044745*/
+          --BGN Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)  
+          from %2:s Assigns/*поручения*/ with(nolock)                                       
+            left join %4:s AssignsPerformers/*табл.часть Исполнители*/ with(nolock) on AssignsPerformers.Analit = Assigns.Analit
+          --END Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock) 
+              and AssignsPerformers.SNGMessageStateT not in ('D', '5', '6', '7', '9') 
+              and AssignsPerformers.SNGMessageStateT is not null
+            left join dbo.MBAnalit Workers with(nolock)/*работник*/ on Workers.Analit = %18:s 
+              join %9:s Divisions/*Орг.единица из тч Исполнители*/ with(nolock) on Divisions.Analit = %10:s                                 --Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)
+            join dbo.MBAnalit Divisions2 with(nolock)/*Орг.единица из карточки работника*/ on Divisions2.Analit = Workers.Podr
+            left join %3:s RRC with(nolock) on RRC.Analit = %0:s                                                                            --Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)
+          where %6:s 
+            and Assigns.XRecStat = '+' 
+            and (%7:s = 'Y') 
+            and (Divisions.Analit in (%12:s) or Divisions2.Analit in (%12:s)) 
+            and (%13:s = %14:s or %19:s = %14:s) 
+            and Assigns.SNGORDRRCAssignmentT in ('R', 'C', 'D')
+            and RRC.XRecStat = '+' 
+            and exists(select r.Analit from dbo.MBAnalit r with(nolock) where r.Analit = RRC.IDSpr and r.XRecStat = '+')
+          ) as data on data.Analit = org.Analit
+          where 
+            org.Vid = %16:s                           
+            and org.SNGBusinessUnit = %14:s           
+            and org.Sost = 'Д'                        
+            and org.Analit in (%12:s)                 
+            and (leader_assignment is null 
+            or not exists 
+            (select distinct ass.Analit
+              from dbo.MBAnalit ass with(nolock) 
+              inner join dbo.MBAnalit rkk2 with(nolock) on rkk2.Analit = ass.HighLvl 
+              inner join dbo.MBAnValR ex with(nolock) on ex.Analit=Ass.Analit  
+              left join dbo.MBAnalit execut2 with(nolock) on execut2.XRecID = ex.PerformerT and execut2.vid = %20:s --288   
+              left join dbo.MBAnalit execut_podr2 with(nolock) on execut_podr2.XRecID = ex.PodrT and execut_podr2.vid = %21:s --446 
+              inner join dbo.MBAnalit work_podr2 with(nolock) on execut2.Podr = work_podr2.Analit and work_podr2.vid = %21:s --446
+              where ass.Vid = %17:s --3415
+              and Ass.XRecStat = '+'               
+              and rkk2.Analit = rrcrec  
+              and ex.SNGMessageStateT is not null
+              and ass.Analit = leader_assignment 
+              and (execut_podr2.Analit = org.Analit or work_podr2.Analit = org.Analit)
+              ))
+        group by org.Analit, org.NameAn
+        order by org.NameAn
+  ";Arrayof(AssignsRRCFieldName; 
+            AssignCompleteDetField; 
+            AssignsName; 
+            RRCName; 
+            AssignPerformersDataSetName;
+            RRCLowerRRCField; 
+            Addwhere0; 
+            AssignControlTypeField; 
+            DivisionsUpLevelDivField; 
+            DivisionsName; 
+            AssignDivisionField;
+            RegField; 
+            AdministrationStructureIDs; 
+            DivBUnitField; 
+            OilBusinessUnitID; 
+            CalendRefID; 
+            Divisions.ComponentID; 
+            ИДТипСпр('SNGORDRRCAssignments');
+            AssignPerformerField;
+            DivBUnitField2;
+            ИДТипСпр('РАБ');
+            ИДТипСпр('ПОД'); 
+            FindNextWorkDay))                                                   // Biryuchkova_AA 28.01.2021 6000044745
+  StringArray = Arrayof('3.'; 'Аппарат управления';' ';' ';' ';' ';' ';' ')                   
+  TableData = AddElementToArray(TableData; StringArray)
+  Counter = 1  
+  //edittext(Query)                                 
+  foreach record in CSQl(Query;;'|')                             
+    DivId = Substring(record; '|'; 1)
+    if Assigned(DivId)
+      Label = SNGGetReqValue('ПОД'; SNGORDGetRecordCodeFromID(DivID); 'Section1')
+      if not (Label=='Группа ДКИД' or Label=='Группа ОТ' or Label=='Юридическая группа')
+       Label = SNGGetReqValue('ПОД'; SNGORDGetRecordCodeFromID(DivID); 'Наименование')
+      endif
+      AssignsCount = Substring(record; '|'; 3)
+      DoneCount = Substring(record; '|'; 4)
+      TimelyDoneCount = Substring(record; '|'; 5)             
+      if AssignsCount = 0
+        Koef1 = 1
+        Koef2 = 1
+      else
+        Koef1 = DoneCount / AssignsCount
+        Koef2 = TimelyDoneCount / AssignsCount              
+      endif
+      StringArray = Arrayof('3.'&Counter; Label; Substring(record; '|'; 2); AssignsCount; DoneCount; TimelyDoneCount; ФМТЧСЛ('5.2'; Koef1); ФМТЧСЛ('5.2'; Koef2)) 
+      TableData = AddElementToArray(TableData; StringArray)
+      Counter = Counter + 1        
+      // Пополнение переменных с суммами   
+      Sum1 = Sum1 + Substring(record; '|'; 2)
+      Sum2 = Sum2 + AssignsCount  
+      Sum3 = Sum3 + DoneCount
+      Sum4 = Sum4 + TimelyDoneCount   
+      DelStrIndex = StrIDs.Indexof(DivId)     
+      if DelStrIndex > -1
+        StrIDs.Delete(DelStrIndex)
+      endif 
+    endif
+  endforeach    
+   
+  // Добавление подразделений без поручений по аппарату управления
+  if StrIDs.Count > 0
+    foreach StrID in StrIDs
+      Label = SNGGetReqValue('ПОД'; SNGORDGetRecordCodeFromID(StrID); 'Section1')
+      if not (Label=='Группа ДКИД' or Label=='Группа ОТ' or Label=='Юридическая группа')
+        Label = SNGGetReqValue('ПОД'; SNGORDGetRecordCodeFromID(StrID); 'Наименование')
+      endif
+      StringArray = Arrayof('3.'&Counter; Label; 0; 0; 0; 0; 1; 1) 
+      TableData = AddElementToArray(TableData; StringArray)  
+      Counter = Counter + 1   
+    endforeach
+  endif        
+  
+  
+  //Запрос и добавление информации по прочим орг.единицам
+  WithoutOrgEdCods = GetConstant('SNGORDNotInHelpInRatioCalculationReport';'';;false)
+  WithoutOrgEdIds = CreateStringList()
+  WithoutOrgEdIds.DelimitedText = AdministrationStructureIDs
+  foreach item in CSubString(WithoutOrgEdCods;';')
+    OrdEdId = SNGGetReqValue('ПОД';item;SYSREQ_ID)
+    if OrdEdId <<>> ''
+      WithoutOrgEdIds.Add(OrdEdId)
+    endif
+  endforeach
+  
+  Query =        
+  Format("--ОРД/Расчет отчета SNGORDPerformRAtioCalculation
+          select 
+            highdep.HighDepID,  
+            Count(distinct rrcrec), 
+            Count(distinct assignmentPerf), 
+            isnull(Sum(FinalDate),0), 
+            isnull(Sum(FinalPeriod),0), 
+            highdep.HighDepName
+          from dbo.MBAnalit org with(nolock) 
+            left join 
+            (
+            select 
+              isnull(Divisions2.analit,Divisions.Analit) as analit,
+              RRC.Analit as rrcrec, 
+              Assigns.Analit as assignment, 
+              Assigns.SNGRRCAssignment as leader_assignment,
+              AssignsPerformers.XRecID as assignmentPerf, 
+              case when AssignsPerformers.SNGMessageStateT = '4' then 1 else 0 end as FinalDate,
+              case when AssignsPerformers.SNGMessageStateT = '4' and
+              (CONVERT(date,
+               (select MIN(t.d)
+                from
+               ((select doc.SNGDate d 
+               FROM dbo.SBEDoc doc with(nolock)
+               WHERE doc.XRecID = CASE WHEN CHARINDEX(',',AssignsPerformers.AdditionT)>0 
+               THEN cast(LEFT(AssignsPerformers.AdditionT,CHARINDEX(',',AssignsPerformers.AdditionT)-1) AS int) 
+               ELSE CAST(AssignsPerformers.AdditionT AS int) end)
+               union all
+               --select isnull(AssignsPerformers.DataT, Assigns.Date2) d)t) ,104) <= CONVERT(date,Assigns.Date2,104)) then 1 else 0 end as FinalPeriod                       /*Bershinskaya_AV ДИ600017997 добавлен ISNULL*/ /* Biryuchkova_AA 28.01.2021 6000044745*/
+               select isnull(AssignsPerformers.DataT, (%28:s)) d)t) ,104) <= CONVERT(date,(%28:s),104)) then 1 else 0 end as FinalPeriod
+            --BGN Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)                                                                                                 /* Biryuchkova_AA 28.01.2021 6000044745*/
+            from %2:s Assigns/*поручения*/ with(nolock)                                                                                                                                        
+              left join %4:s AssignsPerformers/*табл.часть Исполнители*/ with(nolock) on AssignsPerformers.Analit = Assigns.Analit
+            --END Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)  
+                and AssignsPerformers.SNGMessageStateT not in ('D', '5', '6', '7', '9') 
+                and AssignsPerformers.SNGMessageStateT is not null
+              left join dbo.MBAnalit Workers with(nolock)/*работник*/ on Workers.Analit = %17:s 
+              join %9:s Divisions/*Орг.единица из тч Исполнители*/ with(nolock) on Divisions.Analit = %10:s                              --Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)   
+              join dbo.MBAnalit Divisions2 with(nolock)/*Орг.единица из карточки работника*/ on Divisions2.Analit = Workers.Podr   
+              left join %3:s RRC/*РКК*/ with(nolock) on RRC.Analit = %0:s                                                                --Borisyuk_AA [6000062164] 24.01.2022 добавлен with(nolock)
+            where %6:s 
+              and Assigns.XRecStat = '+' 
+              and (%7:s = 'Y') 
+              and (Divisions.Analit not in(%12:s) and Divisions2.Analit not in(%12:s)) 
+              and (%13:s = %14:s or %24:s = %14:s) 
+              and (Divisions.Analit <> %16:s) 
+              and (%15:s <> %16:s) 
+              and Assigns.SNGORDRRCAssignmentT in ('R', 'C', 'D') 
+              and RRC.XRecStat = '+' 
+              and exists(select r.Analit from dbo.MBAnalit r with(nolock) where r.Analit = RRC.IDSpr and r.XRecStat = '+')
+            ) as data on data.Analit = org.Analit
+            join %20:s as highdep on highdep.DepID = org.Analit   -- группировка по орг единицам 
+          where 
+            org.Vid = %19:s                         
+            and org.SNGBusinessUnit = %14:s       
+            and org.Sost = 'Д'                    
+            and (highdep.HighDepID not in (%21:s,%22:s,%23:s) or highdep.HighDepID is null) 
+            and (highdep.HighDepID not in (%12:s) or highdep.HighDepID is null)
+            and (highdep.HighDepID not in (1677609,1677610,1677645,1677607,1677650,1677651,1677652) or highdep.HighDepID is null) --убрать устаревшие орг.ед.
+            and (leader_assignment is null 
+                  or not exists 
+                (select distinct ass.Analit
+                from MBAnalit ass with(nolock)
+                inner join dbo.MBAnalit rkk2 with(nolock) on rkk2.Analit = ass.HighLvl
+                inner join dbo.MBAnValR ex with(nolock) on ex.Analit=ass.Analit 
+                left join dbo.MBAnalit execut2 with(nolock) on execut2.XRecID = ex.PerformerT and execut2.vid = %26:s --288   
+                left join dbo.MBAnalit execut_podr2 with(nolock) on execut_podr2.XRecID = ex.PodrT and execut_podr2.vid = %27:s --446 
+                inner join dbo.MBAnalit work_podr2 with(nolock) on execut2.Podr = work_podr2.Analit and work_podr2.vid = %27:s --446
+                where ass.Vid = %25:s --3415
+                and Ass.XRecStat='+'
+                and rkk2.Analit = rrcrec  
+                and ex.SNGMessageStateT is not null
+                and ass.Analit = leader_assignment 
+                and (execut_podr2.XRecID in (highdep.HighDepID) or work_podr2.XRecID in (highdep.HighDepID)
+                or execut_podr2.podr in (highdep.HighDepID) or work_podr2.podr in (highdep.HighDepID))))
+          group by highdep.HighDepID, highdep.HighDepName
+          order by highdep.HighDepName
+  ";Arrayof(AssignsRRCFieldName; 
+            AssignCompleteDetField; 
+            AssignsName; 
+            RRCName; 
+            AssignPerformersDataSetName;                                  
+            RRCLowerRRCField; 
+            Addwhere0; 
+            AssignControlTypeField; 
+            DivisionsUpLevelDivField; 
+            DivisionsName; 
+            AssignDivisionField;
+            RegField; 
+            WithoutOrgEdIds.DelimitedText; 
+            DivBUnitField; 
+            OilBusinessUnitID; 
+            WorkersPodField; 
+            LeadershipApparatusID;
+            AssignPerformerField; 
+            CalendRefID; 
+            Divisions.ComponentID; 
+            TableNameWithCurrentUserName; 
+            OilUnitID; 
+            ManagementStructureUnitID; 
+            LeadershipApparatusID; 
+            DivBUnitField2; 
+            ИДТипСпр('SNGORDRRCAssignments'); 
+            ИДТипСпр('РАБ'); 
+            ИДТипСпр('ПОД'); 
+            FindNextWorkDay))                                                   //Biryuchkova_AA 28.01.2021 6000044745
+  StringArray = Arrayof('4.'; 'Комплексы, отделы, службы, участки';' ';' ';' ';' ';' ';' ')                   
+  TableData = AddElementToArray(TableData; StringArray)
+  Counter = 1
+
+  foreach record in CSQl(Query;;'|')                             
+    DivId = Substring(record; '|'; 1)
+    if Assigned(DivId)
+      Label = SNGGetReqValue('ПОД'; SNGORDGetRecordCodeFromID(DivID); 'Наименование')
+      AssignsCount = Substring(record; '|'; 3)
+      DoneCount = Substring(record; '|'; 4)
+      TimelyDoneCount = Substring(record; '|'; 5)             
+      if AssignsCount = 0
+        Koef1 = 1
+        Koef2 = 1
+      else
+        Koef1 = DoneCount / AssignsCount
+        Koef2 = TimelyDoneCount / AssignsCount              
+      endif
+      StringArray = Arrayof('4.'&Counter; Label; Substring(record; '|'; 2); AssignsCount; DoneCount; TimelyDoneCount; ФМТЧСЛ('5.2'; Koef1); ФМТЧСЛ('5.2'; Koef2)) 
+      TableData = AddElementToArray(TableData; StringArray)
+      Counter = Counter + 1        
+      // Пополнение переменных с суммами   
+      Sum1 = Sum1 + Substring(record; '|'; 2)
+      Sum2 = Sum2 + AssignsCount  
+      Sum3 = Sum3 + DoneCount
+      Sum4 = Sum4 + TimelyDoneCount  
+// BGN   Skivu_AI 11.09.2019 6000011097 Формирование справки ОРД
+//            DelStrIndex = AnotherStrIDs.Indexof(DivId)     
+//            if DelStrIndex > -1
+//              AnotherStrIDs.Delete(DelStrIndex)
+//            endif    
+// END   Skivu_AI 11.09.2019 6000011097 Формирование справки ОРД                      
+    endif
+  endforeach   
+   
+   // Добавление подразделений без поручений по комплексам, отделам и тд
+// BGN   Skivu_AI 11.09.2019 6000011097 Формирование справки ОРД
+//   if AnotherStrIDs.Count > 0
+//     foreach AnotherStrID in AnotherStrIDs
+//       Label = SNGGetReqValue('ПОД'; SNGORDGetRecordCodeFromID(AnotherStrID); 'Наименование')
+//       StringArray = Arrayof('4.'&Counter; Label; 0; 0; 0; 0; 1; 1) 
+//       TableData = AddElementToArray(TableData; StringArray)  
+//       Counter = Counter + 1   
+//     endforeach
+//   endif             
+// END   Skivu_AI 11.09.2019 6000011097 Формирование справки ОРД   
+   //Добавление строки с итогами
+   if Sum2 = 0
+      Sum5 = 1
+      Sum6 = 1
+   else
+      Sum5 = ФМТЧСЛ('5.2'; Sum3 / Sum2)
+      Sum6 = ФМТЧСЛ('5.2'; Sum4 / Sum2)        
+   endif
+   StringArray = Arrayof(' '; 'Всего'; Sum1; Sum2; Sum3; Sum4; Sum5; Sum6)
+   TableData = AddElementToArray(TableData; StringArray)
+   
+   DropTable(TableNameWithCurrentUserName)        
+      
+   if ArrayHighbound(TableData) = -1
+     Raise(CreateException(''; LoadString('DIRSTR_769'; 'EDM'); ecInformation))        
+   endif
