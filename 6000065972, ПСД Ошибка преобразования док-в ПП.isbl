@@ -1,0 +1,1085 @@
+  //Поиск не преобразованных документов.
+  PIPELINE = '|'
+  MAXATT = 50 
+  LogFile = Format("%sSNGLogs.%s.%s.log"; ArrayOf(GetStandardLogPath(); Application.Connection.SystemInfo.DataBaseName; Object.Name))
+  Log = CreateStringList()
+  
+ //Запрос поиска не преобразованных документов
+ //BGN КР 6042707 12.08.2015 Кабиров Д.А. (Перенос запросов и продуктивной системы)
+ //+Semenov_KG: ДИ600015439 23.06.2017 оптимизация
+ //BGN CHG Vakhrushev_DS ДИ 600038638 24.08.2018
+ VidPRR = SQL("select Vid from dbo.MBVidAn where Kod = 'ПРР'") //ИД справочника Приложения редакторы      
+ VidEDS = SQL("select Vid from dbo.MBVidAn where Kod = 'EDS'")    //ИД справочника Хранилища текстов документов
+ DocEditorDocXls = SQL(Format("select an.analit from dbo.MBAnalit an  where an.vid = '%s' and an.AppExt in ('DOC','DOCX','XLS','XLSX')"; VidPRR);; ',') //ИД приложений редакторов Doc, docx, xls, xlsx
+ DocEditorDWG = SQL(Format("select an.analit from dbo.MBAnalit an with(nolock) where an.vid = '%s' and an.AppExt = 'DWG'"; VidPRR);; ',') //ИД приложений редакторов DWG
+ DocEditorJPG = SQL(Format("select an.analit from dbo.MBAnalit an with(nolock) where an.vid = '%s' and an.AppExt = 'JPG'"; VidPRR);; ',') //ИД приложений редакторов JPG 
+ DocEditorPDF = SQL(Format("select an.analit from dbo.MBAnalit an with(nolock) where an.vid = '%s' and an.AppExt = 'PDF'"; VidPRR);; ',') //ИД приложений редакторов PDF
+ Storage = SQL(Format("Select aa.Analit from dbo.MBAnalit aa where aa.Vid = '%s' and aa.Kod in ('NonReplArc','ReplArch')"; VidEDS);; ',') //ИД записей спр. NonReplArc - ПСД. Нереплицируемое архивное ФХ, ReplArch - ПСД. Реплицируемое архивное ФХ
+ //Query = "--PSD/SNGPSDFindAndConversionDocsPSD/сценарий
+ QueryText = "--PSD/SNGPSDFindAndConversionDocsPSD/сценарий
+ --END CHG Vakhrushev_DS ДИ 600038638 24.08.2018
+            EXECUTE sp_executesql N'
+            declare @vidVED int
+            declare @vidPRR int
+            declare @vidEDS int
+            declare @IDTKEDEngGraphDocs int
+            declare @VidStagesOfDrawing int
+            declare @VidPartPSD int
+            declare @VidSourceDocument int
+            declare @IDEditorAcrobatReader int
+            set @vidVED = (select Vid from dbo.MBVidAn with(nolock) where Kod = ''ВЭД'')
+            set @vidPRR = (select Vid from dbo.MBVidAn with(nolock) where Kod = ''ПРР'')
+            set @vidEDS = (select Vid from dbo.MBVidAn with(nolock) where Kod = ''EDS'')
+            set @IDTKEDEngGraphDocs = (select TypeID From dbo.MBEDocType with(nolock) where kod = ''SNGPSDEngGraphDocs'')
+            set @VidStagesOfDrawing = (select Vid from dbo.MBVidAn with(nolock) where Kod = ''SNGPSDStagesOfDrawing'')
+            set @VidPartPSD         = (select Vid from dbo.MBVidAn with(nolock) where Kod = ''SNGPSDPartsPSD'')
+            set @VidSourceDocument = (Select a.Analit from MBANALIT a where a.Vid = @vidVED and a.NameAn = ''ПСД. Исходный документ ПСД'') 
+            set @IDEditorAcrobatReader = (Select a1.Analit from dbo.MBANALIT a1 with(nolock) where a1.Vid = @vidPRR and a1.NameAn = ''Acrobat Reader'') 
+            
+            SELECT distinct doc.XRecID 
+            FROM dbo.SBEDoc doc with(nolock)
+            WHERE
+                --doc.Editor in (select an.analit from dbo.MBAnalit an with(nolock) where an.vid = @vidPRR and an.AppExt in (''DOC'',''DOCX'',''XLS'',''XLSX'',''DWG''))
+                --BGN CHG Vakhrushev_DS ДИ 600038638 24.08.2018
+                --doc.Editor in (select an.analit from dbo.MBAnalit an with(nolock) where an.vid = @vidPRR and an.AppExt in (''DOC'',''DOCX'',''XLS'',''XLSX''))
+                --and doc.Storage not in (Select aa.Analit from dbo.MBAnalit aa with(nolock) where aa.Vid = @vidEDS and aa.Kod in (''NonReplArc'',''  ReplArch''))
+                doc.Editor in (%0:s)
+                and doc.Storage not in (%4:s)
+                -- END CHG Vakhrushev_DS ДИ 600038638 24.08.2018
+                and doc.Kind = @VidSourceDocument 
+                and doc.LifeStageName != ''Отменен''
+                --and (select NameAn from dbo.MbAnalit with(nolock) where Vid = @VidStagesOfDrawing and Analit = doc.SNGStageOfDrawing) != ''ПД''
+                and (select NameAn from dbo.MbAnalit with(nolock) where Vid = @VidStagesOfDrawing and Analit = doc.SNGStageOfDrawing) not in (''ПД'',''ПД (одностадийная)'')   --Semenov_KG ДИ6000007627 13.09.2019
+                and not exists(
+                   select 1 from dbo.SBEDocValR4 docPartPSD with(nolock)
+                            left join dbo.MBAnalit PartPSD with(nolock) on PartPSD.Analit = docPartPSD.SNGPartPSDT4 and PartPSD.Vid = @VidPartPSD  
+                            where 
+                            doc.TypeID = docPartPSD.TypeID 
+                            and docPartPSD.EdocID = doc.XRecID
+                            and ((PartPSD.SNGLongString  Like ''рабочая документация%%'') or (PartPSD.SNGLongString  Like ''Дополнительные материалы%%'') or (PartPSD.SNGLongString  Like ''Рабочий проект%%''))  --Semenov_KG: ДИ6000029723 05.06.2020 --Bershinskaya_AV_25082021_6000041932
+                   )   --Semenov_KG: 28.05.2018 ДИ600038253
+                  
+                 and (EXISTS(Select 1 from dbo.MBAnalit with(nolock) where Vid = @VidPartPSD and Analit = doc.SNGPartPSD and Date4 is not Null) or EXISTS(select 1 from dbo.SBEDocValR4  with(nolock)  where doc.XRecID = EDocID and EXISTS (Select 1 from dbo.MBAnalit with(nolock) where Vid = @VidPartPSD and Analit = SNGPartPSDT4 and Date4 is not Null)))
+                 and ((NOT EXISTS (SELECT 1 from dbo.SBLinks DL with(nolock)
+                                   WHERE DL.SourceID = doc.XRecID
+                                     and DL.SourceType = ''E'' and DL.DestType= ''E'')
+                 and NOT EXISTS (SELECT 1 from dbo.SBLinks DL with(nolock)
+                                       WHERE DL.DestID = doc.XRecID
+                                         and DL.SourceType = ''E'' and DL.DestType= ''E''))
+                                         
+                 OR EXISTS (Select 1 
+                                   from dbo.SBLinks DL2 with(nolock), 
+                                        dbo.SBEDoc Doc2 with(nolock)
+                                   where DL2.SourceID = doc.XRecID and DL2.DestID = Doc2.XRecID 
+                                     and DL2.SourceType = ''E'' and DL2.DestType= ''E''
+                                     and Doc2.Editor != @IDEditorAcrobatReader
+                                  ) 
+                                  --существует основной текущий документ к которому есть связанный и связанный не PDF
+                 OR EXISTS (Select 1 from dbo.SBLinks DL2 with(nolock), dbo.SBEDoc Doc2 with(nolock)
+                                           where DL2.DestID = doc.XRecID and DL2.SourceID = Doc2.XRecID 
+                                           and DL2.SourceType = ''E'' and DL2.DestType= ''E''
+                                           and Doc2.Editor != @IDEditorAcrobatReader 
+                                  ) 
+                                  --существует связанный текущий документ к которому есть основной и основной не PDF
+                 OR EXISTS (Select 1 from dbo.SBLinks DL3 with(nolock), dbo.SBEDoc Doc3 with(nolock)
+                                         where DL3.SourceID = doc.XRecID and DL3.DestID = Doc3.XRecID 
+                                         and DL3.SourceType = ''E'' and DL3.DestType= ''E''
+                                         and Doc3.Editor != @IDEditorAcrobatReader
+                                         and Doc3.Kind = @VidSourceDocument
+                                  )
+                                  --существует основной текущий документ к которому есть связанный и связанный -PDF и вид связан.-Исходный документ ПСД 
+                 OR EXISTS (Select 1 
+                                   from dbo.SBLinks DL3 with(nolock), 
+                                        dbo.SBEDoc Doc3 with(nolock)
+                                   where DL3.DestID = doc.XRecID and DL3.SourceID = Doc3.XRecID 
+                                     and DL3.SourceType = ''E'' and DL3.DestType= ''E''
+                                     and Doc3.Editor != @IDEditorAcrobatReader
+                                     and Doc3.Kind = @VidSourceDocument
+                                  )
+                                  --существует связанный текущий документ к которому есть основной и основной -PDF и  вид основ.-Исходный документ ПСД 
+                     )
+                                             
+                 and not EXISTS(select 1 
+                                from dbo.SBEDocValR4  with(nolock)  
+                                where doc.XRecID = EDocID 
+                                  and (
+                                       (Select SNGLongString 
+                                       from dbo.MBAnalit with(nolock) 
+                                       where Vid = @VidPartPSD 
+                                        and Analit = SNGPartPSDT4) Like ''проектная документация%%''
+                                       
+                                       or
+                                       
+                                       (Select SNGLongString 
+                                       from dbo.MBAnalit with(nolock) 
+                                       where Vid = @VidPartPSD 
+                                        and Analit = SNGPartPSDT4) Like ''типовое проектное решение%%''
+                                       
+                                       or 
+                                       
+                                       (Select SNGLongString 
+                                       from dbo.MBAnalit with(nolock) 
+                                       where Vid = @VidPartPSD 
+                                        and Analit = SNGPartPSDT4) Like ''проект межевания%%''
+                                       
+                                       --ДИ6000014947 
+                                       or 
+                                       
+                                       (Select SNGLongString 
+                                       from dbo.MBAnalit with(nolock) 
+                                       where Vid = @VidPartPSD 
+                                        and Analit = SNGPartPSDT4) Like ''разработка программ исследований%%''
+                                        
+                                       or 
+                                       
+                                       (Select SNGLongString 
+                                       from dbo.MBAnalit with(nolock) 
+                                       where Vid = @VidPartPSD 
+                                       and Analit = SNGPartPSDT4) Like ''проект санитарно-защитной зоны%%''
+                                        
+                                       )  --Semenov_KG: ДИ600060682 25.04.2019
+                                       
+                                        and  (Select NameAn 
+                                              from dbo.MBAnalit with(nolock) 
+                                              where Analit = (Select SNGAreaOfActivity 
+                                                              from dbo.MBAnalit with(nolock) 
+                                                              where Analit = (Select SNGPlanOfDrawing 
+                                                                              from dbo.MBAnalit with(nolock) 
+                                                                              where Vid = @VidPartPSD 
+                                                                              and Analit = SNGPartPSDT4))
+                                              ) = ''Капитальное строительство'' 
+                                              and doc.SNGYesNo = ''Y'' 
+                                              and doc.TypeID = @IDTKEDEngGraphDocs
+                                )
+                  --BGN: Semenov_KG ДИ600010281 29.03.2017
+                  union
+                  SELECT distinct doc.XRecID 
+                  FROM dbo.SBEDoc doc with(nolock)
+                  WHERE
+                    -- BGN CHG Vakhrushev_DS ДИ 600038638 24.08.2018      
+                    --doc.Editor in (select an.analit from dbo.MBAnalit an with(nolock) where an.vid = @vidPRR and an.AppExt in (''DOC'',''DOCX'',''XLS'',''XLSX'',''PDF''))
+                    --and doc.Storage not in (Select aa.Analit from dbo.MBAnalit aa with(nolock) where aa.Vid = @vidEDS and aa.Kod in (''NonReplArc'',''  ReplArch''))
+                    doc.Editor in (%0:s,%1:s)
+                    and doc.Storage not in (%3:s)
+                    -- END CHG Vakhrushev_DS ДИ 600038638 24.08.2018
+                    and doc.Kind = @VidSourceDocument
+                    and doc.LifeStageName != ''Отменен''
+                    --and (select NameAn from dbo.MbAnalit with(nolock) where Vid = @VidStagesOfDrawing and Analit = doc.SNGStageOfDrawing) != ''ПД''
+                    and (select NameAn from dbo.MbAnalit with(nolock) where Vid = @VidStagesOfDrawing and Analit = doc.SNGStageOfDrawing) not in (''ПД'',''ПД (одностадийная)'')   --Semenov_KG ДИ6000007627 13.09.2019 
+                    and not exists(select 1 
+                                          from dbo.SBEDocValR4 docPartPSD with(nolock)
+                                          left join dbo.MBAnalit PartPSD with(nolock) on PartPSD.Analit = docPartPSD.SNGPartPSDT4 and PartPSD.Vid = @VidPartPSD  
+                                          where 
+                                            doc.TypeID = docPartPSD.TypeID
+                                            -- BGN CHG Vakhrushev_DS ДИ 600038638 24.08.2018
+                                            --and doc.Editor in (select an.analit from dbo.MBAnalit an with(nolock) where an.vid = @vidPRR and an.AppExt in (''DOC'',''DOCX'',''XLS'',''XLSX'')) 
+                                            and doc.Editor in (%0:s)
+                                            -- END CHG Vakhrushev_DS ДИ 600038638 24.08.2018
+                                            and docPartPSD.EdocID = doc.XRecID
+                                            and ((PartPSD.SNGLongString  Like ''рабочая документация%%'') or (PartPSD.SNGLongString  Like ''Дополнительные материалы%%'') or (PartPSD.SNGLongString  Like ''Рабочий проект%%''))   --Semenov_KG: ДИ6000029723 05.06.2020 --Bershinskaya_AV_25082021_6000041932
+                                               )   
+                    --Semenov_KG: 28.05.2018 ДИ600038253
+                    --and ((Select Date4 from dbo.MBAnalit with(nolock) where Vid = @VidPartPSD and Analit = doc.SNGPartPSD) is not Null or EXISTS(select 1 from dbo.SBEDocValR4  with(nolock)  where doc.XRecID = EDocID and (Select Date4 from dbo.MBAnalit with(nolock) where Vid = @VidPartPSD and Analit = SNGPartPSDT4) is not Null))
+                    and (
+                          (NOT EXISTS (SELECT 1 from dbo.SBLinks DL with(nolock)
+                                       WHERE DL.SourceID = doc.XRecID
+                                        and DL.SourceType = ''E'' and DL.DestType= ''E''
+                                       )
+                                        and NOT EXISTS (SELECT 1 from dbo.SBLinks DL with(nolock)
+                                                        WHERE DL.DestID = doc.XRecID
+                                                          and DL.SourceType = ''E'' and DL.DestType= ''E''
+                          )
+                         )                                         
+                    OR EXISTS (Select 1 
+                               from dbo.SBLinks DL2 with(nolock), dbo.SBEDoc Doc2 with(nolock)
+                               where DL2.SourceID = doc.XRecID and DL2.DestID = Doc2.XRecID 
+                                 and DL2.SourceType = ''E'' and DL2.DestType= ''E''
+                                 and Doc2.Editor != @IDEditorAcrobatReader
+                               ) 
+                    --существует основной текущий документ к которому есть связанный и связанный не PDF
+                    OR EXISTS (Select 1 
+                               from dbo.SBLinks DL2 with(nolock), 
+                                dbo.SBEDoc Doc2 with(nolock)
+                               where DL2.DestID = doc.XRecID and DL2.SourceID = Doc2.XRecID 
+                                 and DL2.SourceType = ''E'' and DL2.DestType= ''E''
+                                 and Doc2.Editor !=@IDEditorAcrobatReader 
+                               ) 
+                    --существует связанный текущий документ к которому есть основной и основной не PDF
+                    OR EXISTS (Select 1 
+                               from dbo.SBLinks DL3 with(nolock), 
+                                dbo.SBEDoc Doc3 with(nolock)
+                               where DL3.SourceID = doc.XRecID and DL3.DestID = Doc3.XRecID 
+                                 and DL3.SourceType = ''E'' and DL3.DestType= ''E''
+                                 and Doc3.Editor = @IDEditorAcrobatReader
+                                 and Doc3.Kind = @VidSourceDocument
+                               )
+                    --существует основной текущий документ к которому есть связанный и связанный -PDF и вид связан.-Исходный документ ПСД 
+                    OR EXISTS (Select 1 
+                              from dbo.SBLinks DL3 with(nolock), 
+                                dbo.SBEDoc Doc3 with(nolock)
+                              where DL3.DestID = doc.XRecID and DL3.SourceID = Doc3.XRecID 
+                                and DL3.SourceType = ''E'' and DL3.DestType= ''E''
+                                and Doc3.Editor = @IDEditorAcrobatReader
+                                and Doc3.Kind = @VidSourceDocument
+                               )
+                    --существует связанный текущий документ к которому есть основной и основной -PDF и  вид основ.-Исходный документ ПСД 
+                             )                                         
+                    and EXISTS(select 1 from dbo.SBEDocValR4  with(nolock)  
+                               where   
+                                 doc.XRecID = EDocID 
+                                 and ((Select SNGLongString from dbo.MBAnalit with(nolock) 
+                                      where 
+                                        Vid = @VidPartPSD 
+                                        and Analit = SNGPartPSDT4) Like ''Предпроектные проработки%%'' 
+                                       or
+                     (Select SNGLongString from dbo.MBAnalit with(nolock) 
+                                      where 
+                                        Vid = @VidPartPSD 
+                                        and Analit = SNGPartPSDT4) Like ''декларация пожарной безопасности%%''
+                     /* begin chg ratushnyy_mv 14.08.2019 600066641 */
+                                        or
+                     (Select SNGLongString from dbo.MBAnalit with(nolock) 
+                                      where 
+                                        Vid = @VidPartPSD 
+                                        and Analit = SNGPartPSDT4) Like ''Сводный план сетей и ГП%%''
+                     /* end chg ratushnyy_mv 14.08.2019 600066641 */  
+                    )
+                                        and doc.TypeID = @IDTKEDEngGraphDocs
+                                     )
+                    --END: Semenov_KG ДИ600010281 29.03.2017
+            union
+                  
+            SELECT distinct doc.XRecID 
+            FROM dbo.SBEDoc doc with(nolock)
+            WHERE 
+              --BGN CHG Vakhrushev_DS ДИ 600038638 24.08.2018
+              --doc.Editor in (select an.analit from dbo.MBAnalit an with(nolock) where an.vid = @vidPRR and an.AppExt in (''PDF''))
+              --and doc.Storage not in (Select aa.Analit from dbo.MBAnalit aa with(nolock) where aa.Vid = @vidEDS and aa.Kod in (''NonReplArc'',''  ReplArch''))
+              doc.Editor in (%1:s)
+              and doc.Storage not in (%4:s)
+              -- END CHG Vakhrushev_DS ДИ 600038638 24.08.2018
+              and doc.Kind = @VidSourceDocument
+              and (NOT EXISTS (SELECT 1 
+                               from dbo.SBLinks DL with(nolock)
+                               WHERE DL.SourceID = doc.XRecID
+                                 and DL.SourceType = ''E'' and DL.DestType= ''E'')
+                                 and NOT EXISTS (SELECT 1 
+                                                 from dbo.SBLinks DL with(nolock)
+                                                 WHERE DL.DestID = doc.XRecID
+                                                   and DL.SourceType = ''E'' 
+                                                   and DL.DestType= ''E'')
+                   )
+              and (EXISTS (Select 1 
+                           from dbo.MBAnalit with(nolock) 
+                           where Vid = @VidPartPSD 
+                            and Analit = doc.SNGPartPSD 
+                            and Date4 is not Null)  
+                   or EXISTS(select 1 
+                             from dbo.SBEDocValR4  with(nolock)  
+                             where doc.XRecID = EDocID 
+                               and EXISTS(Select 1 
+                                          from dbo.MBAnalit with(nolock) 
+                                          where Vid = @VidPartPSD 
+                                            and Analit = SNGPartPSDT4 
+                                            and Date4 is not Null
+                                          )
+                              )
+                   )
+              and doc.LifeStageName != ''Отменен''
+              --and (select NameAn from dbo.MbAnalit with(nolock) where Vid = @VidStagesOfDrawing and Analit = doc.SNGStageOfDrawing) != ''ПД''
+                              and (select NameAn from dbo.MbAnalit with(nolock) where Vid = @VidStagesOfDrawing and Analit = doc.SNGStageOfDrawing) not in (''ПД'',''ПД (одностадийная)'')   --Semenov_KG ДИ6000007627 13.09.2019
+              --and not exists(
+              --     select 1 from dbo.SBEDocValR4 docPartPSD with(nolock)
+              --              left join dbo.MBAnalit PartPSD with(nolock) on PartPSD.Analit = docPartPSD.SNGPartPSDT4 and PartPSD.Vid = @VidPartPSD  
+              --              where 
+              --              doc.TypeID = docPartPSD.TypeID 
+              --              and docPartPSD.EdocID = doc.XRecID
+              --              and PartPSD.SNGLongString  Like ''рабочая документация%%'' 
+              --     )   --Semenov_KG: 28.05.2018 ДИ600038253
+                   
+              and not EXISTS(select 1 from dbo.SBEDocValR4  with(nolock)  where doc.XRecID = EDocID and ((Select SNGLongString from dbo.MBAnalit with(nolock) where Vid = @VidPartPSD and Analit = SNGPartPSDT4) Like ''проектная документация%%'' or (Select SNGLongString from dbo.MBAnalit with(nolock) where Vid = @VidPartPSD and Analit = SNGPartPSDT4) Like ''типовое проектное решение%%'' or (Select SNGLongString from dbo.MBAnalit with(nolock) where Vid = @VidPartPSD and Analit = SNGPartPSDT4) Like ''разработка прграмм исследований%%'' or (Select SNGLongString from dbo.MBAnalit with(nolock) where Vid = @VidPartPSD and Analit = SNGPartPSDT4) Like ''проект межевания%%'' ) and  (Select NameAn from dbo.MBAnalit with(nolock) where Analit = (Select SNGAreaOfActivity from dbo.MBAnalit with(nolock) where Analit = (Select SNGPlanOfDrawing from dbo.MBAnalit with(nolock) where Vid = @VidPartPSD and Analit = SNGPartPSDT4))) = ''Капитальное строительство'' and doc.SNGYesNo = ''Y'' and doc.TypeID = @IDTKEDEngGraphDocs)
+            
+            --BGNКР 6057444 Кабиров Д.А. Добавлены документы JPG
+            union
+                  
+            SELECT distinct doc.XRecID 
+            FROM dbo.SBEDoc doc with(nolock)
+            WHERE 
+              --BGN CHG Vakhrushev_DS ДИ 600038638 24.08.2018
+              --doc.Editor in (select an.analit from dbo.MBAnalit an with(nolock) where an.vid = @vidPRR and an.AppExt in (''JPG''))
+              --and doc.Storage not in (Select aa.Analit from dbo.MBAnalit aa with(nolock) where aa.Vid = @vidEDS and aa.Kod in (''NonReplArc'',''  ReplArch''))
+              doc.Editor in (%2:s)
+              and doc.Storage not in (%4:s)
+              --END CHG Vakhrushev_DS ДИ 600038638 24.08.2018
+              and doc.Kind = @VidSourceDocument
+              and (NOT EXISTS (SELECT 1 
+                                 from dbo.SBLinks DL with(nolock)
+                                 WHERE DL.SourceID = doc.XRecID
+                                   and DL.SourceType = ''E'' and DL.DestType= ''E'')
+                  and NOT EXISTS (SELECT 1 
+                                   from dbo.SBLinks DL with(nolock)
+                                   WHERE DL.DestID = doc.XRecID
+                                     and DL.SourceType = ''E'' and DL.DestType= ''E''))
+                  and (EXISTS(Select 1 
+                              from dbo.MBAnalit with(nolock) 
+                              where Vid = @VidPartPSD 
+                                and Analit = doc.SNGPartPSD 
+                                and Date4 is not Null) 
+                              or EXISTS(select 1 
+                                        from dbo.SBEDocValR4  with(nolock)  
+                                        where doc.XRecID = EDocID 
+                                          and EXISTS(Select 1 
+                                          from dbo.MBAnalit with(nolock) 
+                                          where Vid = @VidPartPSD 
+                                          and Analit = SNGPartPSDT4 
+                                          and Date4 is not Null
+                                        )
+                              )
+                       )
+                  and doc.LifeStageName != ''Отменен''
+                  and not EXISTS(select 1 from dbo.SBEDocValR4  with(nolock)  where doc.XRecID = EDocID and ((Select SNGLongString from dbo.MBAnalit with(nolock) where Vid = @VidPartPSD and Analit = SNGPartPSDT4) Like ''проектная документация%%'' or (Select SNGLongString from dbo.MBAnalit with(nolock) where Vid = @VidPartPSD and Analit = SNGPartPSDT4) Like ''типовое проектное решение%%'' or (Select SNGLongString from dbo.MBAnalit with(nolock) where Vid = @VidPartPSD and Analit = SNGPartPSDT4) Like ''разработка программ исследований%%'' or (Select SNGLongString from dbo.MBAnalit with(nolock) where Vid = @VidPartPSD and Analit = SNGPartPSDT4) Like ''проект санитарно-защитной зоны%%'' or (Select SNGLongString from dbo.MBAnalit with(nolock) where Vid = @VidPartPSD and Analit = SNGPartPSDT4) Like ''проект межевания%%'') and  (Select NameAn from dbo.MBAnalit with(nolock) where Analit = (Select SNGAreaOfActivity from dbo.MBAnalit with(nolock) where Analit = (Select SNGPlanOfDrawing from dbo.MBAnalit with(nolock) where Vid = @VidPartPSD and Analit = SNGPartPSDT4))) = ''Капитальное строительство'' and doc.SNGYesNo = ''Y'' and doc.TypeID = @IDTKEDEngGraphDocs)
+                 --END КР 6057444 
+                
+              union
+              
+              SELECT distinct doc.XRecID 
+              FROM dbo.SBEDoc doc with(nolock)
+              WHERE
+                --BGN CHG Vakhrushev_DS ДИ 600038638 24.08.2018
+                --doc.Editor in (select an.analit from dbo.MBAnalit an with(nolock) where an.vid = @vidPRR and an.AppExt in (''DWG'')) 
+                --and doc.Storage not in (Select aa.Analit from dbo.MBAnalit aa with(nolock) where aa.Vid = @vidEDS and aa.Kod in (''NonReplArc'',''  ReplArch''))
+                doc.Editor in (%3:s) 
+                and doc.Storage not in (%4:s)
+                --END CHG Vakhrushev_DS ДИ 600038638 24.08.2018
+                and doc.Kind = @VidSourceDocument
+                and (EXISTS(Select 1 from dbo.MBAnalit with(nolock) where Vid = @VidPartPSD and Analit = doc.SNGPartPSD and Date4 is not Null)  or EXISTS(select 1 from dbo.SBEDocValR4  with(nolock)  where doc.XRecID = EDocID and EXISTS(Select 1 from dbo.MBAnalit with(nolock) where Vid = @VidPartPSD and Analit = SNGPartPSDT4 and Date4 is not Null)))
+                and doc.LifeStageName != ''Отменен''
+                --and (select NameAn from dbo.MbAnalit with(nolock) where Vid = @VidStagesOfDrawing and Analit = doc.SNGStageOfDrawing) != ''ПД''
+                and (select NameAn from dbo.MbAnalit with(nolock) where Vid = @VidStagesOfDrawing and Analit = doc.SNGStageOfDrawing) not in (''ПД'',''ПД (одностадийная)'')   --Semenov_KG ДИ6000007627 13.09.2019
+                and not exists(
+                               select 1 
+                               from dbo.SBEDocValR4 docPartPSD with(nolock)
+                               left join dbo.MBAnalit PartPSD with(nolock) on PartPSD.Analit = docPartPSD.SNGPartPSDT4 and PartPSD.Vid = @VidPartPSD  
+                               where 
+                                 doc.TypeID = docPartPSD.TypeID 
+                                 and docPartPSD.EdocID = doc.XRecID
+                                 and ((PartPSD.SNGLongString  Like ''рабочая документация%%'') or (PartPSD.SNGLongString  Like ''Дополнительные материалы%%'') or (PartPSD.SNGLongString  Like ''Рабочий проект%%''))  --Semenov_KG: ДИ6000029723 05.06.2020 --Bershinskaya_AV_25082021_6000041932
+                               )   --Semenov_KG: 28.05.2018 ДИ600038253
+                and not EXISTS(select 1 
+                              from dbo.SBEDocValR4  with(nolock) 
+                              where doc.XRecID = EDocID 
+                                and ((Select SNGLongString 
+                                     from dbo.MBAnalit with(nolock) 
+                                     where Vid = @VidPartPSD 
+                                     and Analit = SNGPartPSDT4) Like ''проектная документация%%''
+                                     or
+                                     (Select SNGLongString 
+                                     from dbo.MBAnalit with(nolock) 
+                                     where Vid = @VidPartPSD 
+                                     and Analit = SNGPartPSDT4) Like ''типовое проектное решение%%''                                     
+                                     
+                                     or
+                                     
+                                     (Select SNGLongString 
+                                     from dbo.MBAnalit with(nolock) 
+                                     where Vid = @VidPartPSD 
+                                     and Analit = SNGPartPSDT4) Like ''разработка программ исследований%%''
+                                     
+                                     or 
+                                     
+                                     (Select SNGLongString 
+                                     from dbo.MBAnalit with(nolock) 
+                                     where Vid = @VidPartPSD 
+                                     and Analit = SNGPartPSDT4) Like ''проект санитарно-защитной зоны%%''
+                                     
+                                     or
+                                     (Select SNGLongString 
+                                     from dbo.MBAnalit with(nolock) 
+                                     where Vid = @VidPartPSD 
+                                     and Analit = SNGPartPSDT4) Like ''проект межевания%%''
+                                     ) 
+                                     and  (Select NameAn 
+                                           from dbo.MBAnalit with(nolock) 
+                                           where Analit = (Select SNGAreaOfActivity 
+                                                           from dbo.MBAnalit with(nolock) 
+                                                           where Analit = (Select SNGPlanOfDrawing 
+                                                                           from dbo.MBAnalit with(nolock) 
+                                                                           where Vid = @VidPartPSD 
+                                                                           and Analit = SNGPartPSDT4))
+                                     ) = ''Капитальное строительство'' and doc.SNGYesNo = ''Y'' and doc.TypeID = @IDTKEDEngGraphDocs)
+                and (EXISTS (Select 1 
+                             from dbo.SBLinks DL2 with(nolock), 
+                                  dbo.SBEDoc Doc2 with(nolock)
+                             where DL2.SourceID = doc.XRecID and DL2.DestID = Doc2.XRecID 
+                               and DL2.SourceType = ''E'' and DL2.DestType= ''E''
+                               and Doc2.Editor !=@IDEditorAcrobatReader 
+                            ) 
+                            --существует основной текущий документ к которому есть связанный и связанный не PDF
+                OR EXISTS (Select 1 
+                           from dbo.SBLinks DL2 with(nolock), 
+                                dbo.SBEDoc Doc2 with(nolock)
+                           where DL2.DestID = doc.XRecID and DL2.SourceID = Doc2.XRecID 
+                             and DL2.SourceType = ''E'' and DL2.DestType= ''E''
+                             and Doc2.Editor != @IDEditorAcrobatReader
+                          ) 
+                          --существует связанный текущий документ к которому есть основной и основной не PDF
+                OR EXISTS (Select 1 
+                           from dbo.SBLinks DL3 with(nolock), 
+                                dbo.SBEDoc Doc3 with(nolock)
+                           where DL3.SourceID = doc.XRecID and DL3.DestID = Doc3.XRecID 
+                             and DL3.SourceType = ''E'' and DL3.DestType= ''E''
+                             and Doc3.Editor = @IDEditorAcrobatReader
+                             and Doc3.Kind = @VidSourceDocument
+                          )
+                          --существует основной текущий документ к которому есть связанный и связанный -PDF и вид связан.-Исходный документ ПСД 
+                OR EXISTS (Select 1 
+                           from dbo.SBLinks DL3 with(nolock), 
+                                dbo.SBEDoc Doc3 with(nolock)
+                           where DL3.DestID = doc.XRecID and DL3.SourceID = Doc3.XRecID 
+                             and DL3.SourceType = ''E'' and DL3.DestType= ''E''
+                             and Doc3.Editor = @IDEditorAcrobatReader
+                             and Doc3.Kind = @VidSourceDocument
+                          )
+                          --существует связанный текущий документ к которому есть основной и основной -PDF и  вид основ.-Исходный документ ПСД 
+                  )
+'"
+  Query = Format(QueryText; ArrayOf(DocEditorDocXls; DocEditorPDF; DocEditorJPG; DocEditorDWG; Storage))       
+  //END CHG Vakhrushev_DS ДИ 600038638 24.08.2018       
+  //-Semenov_KG: ДИ600015439 23.06.2017 оптимизация
+  //END КР 6042707 12.08.2015
+
+  //ResultQuery = Sql(Query)      //КР 6042707 20.08.2015 Кабиров Д.А. Не выполняем данный запрос(требование проектировщика)
+  ResultQuery = ''
+
+
+  //CountQuery  = SubStringCount(ResultQuery; '|') 
+  //EditText(ResultQuery)
+  //exit()
+  //ResultQuery = '' // КР 6042707 20.08.2015 Кабиров Д.А.Не выполняем данный запрос(требование проектировщика)
+  if ResultQuery <<>> ''     
+    IDsAtt = CreateStringList()
+    i = 1
+    foreach element in CSubString(ResultQuery; '|')
+      if i > MAXATT
+        //Формирование задачи
+        EDocID = CreateStringList()
+        EDocID.Delimiter = PIPELINE
+        Task = Tasks.CreateNew()
+        Attachments = Task.GetAttachments(false)
+        foreach IDAtt in IDsAtt
+          Attachments.Add(EDocuments.ObjectInfo(IDAtt))
+          EDocID.Add(IDAtt)
+        endforeach
+        KodTM = GetConstant('SNGPSDTMForConvertToPDF')
+        Task.LoadStandardRoute(KodTM)
+        Params = Task.WorkflowParams
+        Params.ValueByName("ToNewVersion").Value = "Н"
+        Params.ValueByName("LeadUser").Value = Edocuments.CurrentUser
+        Params.ValueByName('EdocID').Value = EDocID.DelimitedText
+        Params.ValueByName('AutomatedStart').Value = true
+        Task.SetupStandardRoute(false)
+        Task.Save()
+        Log.Add(Format('%s Задача по преобразованиформированию ID=%s'; ArrayOf(ServerDateTime(); Task.ID)))       
+        //Конец формирования задачи      
+        IDsAtt = CreateStringList()
+        i = 1
+      endif
+      IDsAtt.Add(element)
+      i = i + 1
+    endforeach
+    
+    if IDsAtt.Count > 0
+      //Формирование задачи (оставшиеся док-ты)
+      EDocID = CreateStringList()
+      EDocID.Delimiter = PIPELINE
+      Task = Tasks.CreateNew()
+      Attachments = Task.GetAttachments(false)
+      foreach IDAtt in IDsAtt
+        Attachments.Add(EDocuments.ObjectInfo(IDAtt))
+        EDocID.Add(IDAtt)
+      endforeach
+      KodTM = GetConstant('SNGPSDTMForConvertToPDF')
+      Task.LoadStandardRoute(KodTM)
+      Params = Task.WorkflowParams
+      Params.ValueByName("ToNewVersion").Value = "Н"
+      Params.ValueByName("LeadUser").Value = Edocuments.CurrentUser
+      Params.ValueByName('EdocID').Value = EDocID.DelimitedText
+      Params.ValueByName('AutomatedStart').Value = true
+      Task.SetupStandardRoute(false)
+      Task.Save()
+      Log.Add(Format('%s Задача по преобразованиформированию ID=%s'; ArrayOf(ServerDateTime(); Task.ID)))       
+      //Конец формирования задачи
+    endif
+  endif     
+  //WriteFile(LogFile; 'Y'; CR & Log.Text)
+  
+  //+Semenov_KG: 06.06.2016 КР6057448 Преобразование объединненного документа по ПД в документ с видом ПСД. Объединенный
+    
+  Query = "
+    EXECUTE sp_executesql N'
+      declare @vidVED                   int
+      declare @vidPRR                   int
+      declare @vidEDS                   int
+      declare @IDTKEDEngGraphDocs       int
+      declare @TypeIDdocBill            int
+      declare @VidPartPSD               int
+      declare @VidPlansOfDrawing        int
+      declare @VidSNGPSDAreasOfActivity int
+                  
+      set @vidVED = (select Vid from dbo.MBVidAn with(nolock) where Kod = ''ВЭД'')
+      set @vidPRR = (select Vid from dbo.MBVidAn with(nolock) where Kod = ''ПРР'')
+      set @vidEDS = (select Vid from dbo.MBVidAn with(nolock) where Kod = ''EDS'')
+      set @IDTKEDEngGraphDocs       = (select TypeID From dbo.MBEDocType with(nolock) where kod = ''SNGPSDEngGraphDocs'')
+      set @TypeIDdocBill            = (select TypeId from dbo.MBEdocType with(nolock) where Kod = ''SNGPSDBill'')
+      set @VidPartPSD               = (select Vid from dbo.MBVidAn with(nolock)       where Kod = ''SNGPSDPartsPSD'') 
+      set @VidPlansOfDrawing        = (select Vid from dbo.MBVidAn with(nolock)       where Kod = ''SNGPSDPlansOfDrawing'')
+      set @VidSNGPSDAreasOfActivity = (select Vid from dbo.MBVidAn with(nolock)       where Kod = ''SNGPSDAreasOfActivity'')
+      
+      -- доработка по объединенному
+                        
+      SELECT distinct doc.XRecID 
+      FROM dbo.SBEDoc doc with(nolock)
+      left join dbo.SBEDocValR4 PartPSDIGDoc with(nolock) on PartPSDIGDoc.EDocID = doc.XRecID and PartPSDIGDoc.TypeID = doc.TypeID
+      left join dbo.MBAnalit PartPSD with(nolock) on PartPSD.Analit = PartPSDIGDoc.SNGPartPSDT4 and PartPSD.Vid = @VidPartPSD
+      left join dbo.MBAnalit PlansOfDrawing    with(nolock) on PartPSD.SNGPlanOfDrawing = PlansOfDrawing.Analit and PlansOfDrawing.Vid = @VidPlansOfDrawing 
+      left join dbo.MBAnalit SNGPSDAreasOfActivity with(nolock) on SNGPSDAreasOfActivity.Analit = PlansOfDrawing.SNGAreaOfActivity and SNGPSDAreasOfActivity.Vid = @VidSNGPSDAreasOfActivity          
+      WHERE doc.Editor in (select an.analit 
+                              from dbo.MBAnalit an with(nolock) 
+                              where an.vid = @vidPRR and an.AppExt in (''PDF'',''JPG''))
+          and doc.Storage not in (Select aa.Analit 
+                                  from dbo.MBAnalit aa with(nolock) 
+                                  where aa.Vid = @vidEDS and aa.Kod in (''NonReplArc'',''  ReplArch''))
+          and doc.Kind in (Select a.Analit 
+                          from dbo.MBANALIT a with(nolock) 
+                          where a.Vid = @vidVED and a.NameAn  = ''ПСД. Исходный документ ПСД''
+                ) 
+          and (NOT EXISTS (SELECT 1 
+                          from dbo.SBLinks DL with(nolock)
+                          WHERE DL.SourceID = doc.XRecID
+                              and DL.SourceType = ''E'' and DL.DestType= ''E'')
+              and NOT EXISTS (SELECT 1 
+                              from dbo.SBLinks DL with(nolock)
+                              WHERE DL.DestID = doc.XRecID
+                                  and DL.SourceType = ''E'' and DL.DestType= ''E''))
+        and (PartPSD.date4 is not Null) --or (PartPSD.YesNo2 = ''Д'') ivina
+        and doc.LifeStageName != ''Отменен'' 
+        --Semenov_KG: ДИ60000143 28.10.2019      
+        --and EXISTS(select 1 from dbo.SBEDocValR4  with(nolock)  where doc.XRecID = EDocID and (PartPSD.SNGLongString Like ''проектная документация%'' or PartPSD.SNGLongString Like ''типовое проектное решение%'' or PartPSD.SNGLongString Like ''проект межевания%'' or PartPSD.SNGLongString Like ''Результаты инженерных изысканий%'' or PartPSD.SNGLongString Like ''инженерные изыскания%'') --Semenov_KG: ДИ600001239 17.01.2016
+        --)
+          and doc.TypeID = @IDTKEDEngGraphDocs
+          and doc.SNGYesNo = ''Y''
+        --and exists(select 1
+        --                      from dbo.SBEDoc docBill with(nolock)
+        --                      left join dbo.SBEDocValR3 PartPSDBill with(nolock) on PartPSDBill.EDocID = docBill.XRecID and PartPSDBill.TypeID = docBill.TypeID
+        --                      where
+        --                      docBill.TypeID = @TypeIDdocBill
+        --                      and PartPSDBill.SNGPartPSDT3 = PartPSDIGDoc.SNGPartPSDT4) 
+    '
+    "
+    //EditText(Query) 
+    ResultQuery = Sql(Query) 
+    //EditText(ResultQuery) 
+    //Exit()
+        
+    if ResultQuery <<>> ''    
+      Task = Tasks.CreateNew()
+      Attachments = Task.GetAttachments(false)
+        foreach IDAtt in CSubString(ResultQuery; '|')
+          Attachments.Add(EDocuments.ObjectInfo(IDAtt))
+          //EDocID.Add(IDAtt)
+        endforeach
+        Task.LoadStandardRoute('PSDRigtFPD')
+        //Task.Requisites('Subject').Value = 'Назначение прав папки ПСД'
+        Params = Task.WorkflowParams
+//        Params.ValueByName("ToNewVersion").Value = "Н"
+//        Params.ValueByName("LeadUser").Value = Edocuments.CurrentUser
+//        Params.ValueByName('EdocID').Value = EDocID.DelimitedText
+//        Params.ValueByName('AutomatedStart').Value = true
+        Task.SetupStandardRoute(false)
+        Task.Start()
+        Log.Add(Format('%s Преобразование объединненного документа по ПД в документ с видом ПСД ID=%s'; ArrayOf(ServerDateTime(); Task.ID)))       
+    endif    
+    
+    
+    //-Semenov_KG   06.06.2016 КР6057448 
+  
+  //+Semenov_KG: 28.17.2016 6061545 Преобразование (добавление прав) для ТКЭД "Удостоверяющий лист"
+    
+  Query = "
+     EXECUTE sp_executesql N'
+        declare @vidVED                   int
+        declare @vidPRR                   int
+        declare @vidEDS                   int
+        declare @IDTKEDEngGraphDocs       int
+        declare @TypeIDdocBill            int
+    declare @TypeIDAuthoritativeSheet int
+        declare @VidPartPSD               int
+        declare @VidPlansOfDrawing        int
+        declare @VidSNGPSDAreasOfActivity int
+                    
+        set @vidVED = (select Vid from dbo.MBVidAn with(nolock) where Kod = ''ВЭД'')
+        set @vidPRR = (select Vid from dbo.MBVidAn with(nolock) where Kod = ''ПРР'')
+        set @vidEDS = (select Vid from dbo.MBVidAn with(nolock) where Kod = ''EDS'')
+        set @IDTKEDEngGraphDocs       = (select TypeID From dbo.MBEDocType with(nolock) where kod = ''SNGPSDEngGraphDocs'')
+        set @TypeIDdocBill            = (select TypeId from dbo.MBEdocType with(nolock) where Kod = ''SNGPSDBill'')
+    set @TypeIDAuthoritativeSheet = (select TypeId from dbo.MBEdocType with(nolock) where Kod = ''SNGPSDAuthoritativeSheet'')
+        set @VidPartPSD               = (select Vid from dbo.MBVidAn with(nolock)       where Kod = ''SNGPSDPartsPSD'') 
+        set @VidPlansOfDrawing        = (select Vid from dbo.MBVidAn with(nolock)       where Kod = ''SNGPSDPlansOfDrawing'')
+        set @VidSNGPSDAreasOfActivity = (select Vid from dbo.MBVidAn with(nolock)       where Kod = ''SNGPSDAreasOfActivity'')
+        
+        -- Выборка документов Удостоверяющий лист для назначения прав
+                          
+        SELECT distinct doc.XRecID 
+        FROM dbo.SBEDoc doc with(nolock)
+    left join dbo.MBAnalit PartPSD with(nolock) on PartPSD.Analit = doc.SNGPartPSD and PartPSD.Vid = @VidPartPSD       
+        WHERE 
+          doc.LifeStageName != ''Отменен''       
+          and doc.TypeID = @TypeIDAuthoritativeSheet
+  and (
+          ( 
+            PartPSD.Date4 is not Null
+            --and
+            --exists(select 1 from dbo.SBEDoc docBill with(nolock)
+            --                     left join dbo.SBEDocValR3 PartPSDBill with(nolock) on PartPSDBill.EDocID = docBill.XRecID and PartPSDBill.TypeID = docBill.TypeID
+            --                     where
+            --                     docBill.TypeID = @TypeIDdocBill
+            --                     and PartPSDBill.SNGPartPSDT3 = PartPSD.Analit)
+        --and (PartPSD.YesNo2 != ''Д'' or PartPSD.YesNo2 is Null)          ivina
+  )
+/* or
+  (
+        PartPSD.Date4 is Null
+            --and
+            --exists(select 1 from dbo.SBEDoc docBill with(nolock)
+            --                     left join dbo.SBEDocValR3 PartPSDBill with(nolock) on PartPSDBill.EDocID = docBill.XRecID and PartPSDBill.TypeID = docBill.TypeID
+            --                     where
+            --                     docBill.TypeID = @TypeIDdocBill
+            --                     and PartPSDBill.SNGPartPSDT3 = PartPSD.Analit)
+        and (PartPSD.YesNo2 = ''Д'')
+    and PartPSD.Date5 is not Null   
+  )           ivina        */ 
+       )
+  and (doc.SNGYesNo != ''Y'' or doc.SNGYesNo is Null)
+  '"
+    ResultQuery = Sql(Query)      
+    if ResultQuery <<>> ''    
+      Task = Tasks.CreateNew()
+      Attachments = Task.GetAttachments(false)
+        foreach IDAtt in CSubString(ResultQuery; '|')
+          Attachments.Add(EDocuments.ObjectInfo(IDAtt))
+          //EDocID.Add(IDAtt)
+        endforeach
+        Task.LoadStandardRoute('PSDRightAS')
+        //Task.Requisites('Subject').Value = 'Назначение прав папки ПСД'
+        Params = Task.WorkflowParams
+        Task.SetupStandardRoute(false)
+        Task.Start()
+        Log.Add(Format('%s Назначение ВСЕМ прав документу с ТКЭД Удостоверяющий лист ID=%s'; ArrayOf(ServerDateTime(); Task.ID)))       
+    endif    
+       
+    //-Semenov_KG   28.17.2016 6061545 
+  
+  
+  
+  
+  //BGN КР 6041974 23.07.2015 Кабиров Д.А. 
+  Task = nil
+  Attachments= nil
+  Params = nil
+  IDsAtt = nil
+  //получаем группу пользователей "ПСД/0000 Специалисты управлений по направлениям деятельности"
+  SpecialistsGroup = GetConstant('SNGPSDManagingSpecialistsGroup';'')    //'SNG_1030_00_0000_0018'
+  PSDCommonUserGroup = GetAssignedConst('SNGPSDCommonUserGroup')  //Semenov_KG: ДИ60000017866 12.12.2019 
+  //Запрос поиска документов без прав доступа для группы "ПСД/0000 Специалисты управлений по направлениям деятельности"
+  if SpecialistsGroup <<>> ''    //КР 6042707 06.08.2015 Кабиров Д.А. Добавлена проверка 
+
+  QueryAccess = Format("--PSD/SNGPSDFindAndConversionDocsPSD/сценарий
+                        declare @vidVED int
+                        declare @vidPartsPSD int
+                        declare @vidGPL int
+                        declare @IDTKED int
+                        declare @PSDBillID int
+                        declare @vidEDS int
+                        set @vidVED = (select Vid from dbo.MBVidAn where Kod = 'ВЭД')
+                        set @vidPartsPSD = (select Vid from dbo.MBVidAn where Kod = 'SNGPSDPartsPSD')
+                        set @vidGPL = (select Vid from dbo.MBVidAn where Kod = 'ГПЛ')
+                        set @IDTKED = (select TypeID From dbo.MBEDocType where kod = 'SNGPSDEngGraphDocs')
+                        set @vidEDS = (select Vid from dbo.MBVidAn where Kod = 'EDS')
+                        set @PSDBillID = (select TypeID From dbo.MBEDocType where kod = 'SNGPSDBill')
+                        
+                        -- Получить ИД группы пользователей 
+                        declare @GroupID int = (select Analit from MBAnalit
+                                                where Vid = @vidGPL
+                                                      and Dop = '%0:s')
+                        declare @CommonGroupID int = (select Analit from MBAnalit
+                                                where Vid = @vidGPL
+                                                      and Dop = '%1:s')                                                      
+                        
+                        select distinct doc.XRecID
+                        from SBEDoc doc
+                             --join SBEDocValR3 ValR3 on ValR3.EDocID = doc.XRecID
+                             left join SBEDocValR3 ValR3 on ValR3.EDocID = doc.XRecID
+                             join MBAnalit Storages on Storages.Vid = @vidEDS and doc.Storage = Storages.Analit
+                             --join MBAnalit PartsPSD on PartsPSD.Vid = @vidPartsPSD and PartsPSD.Analit = ValR3.SNGPartPSDT3     --comm Bershinskaya_AV 04 02 2021 6000044744
+                             left join MBAnalit PartsPSD on PartsPSD.Vid = @vidPartsPSD and PartsPSD.Analit = ValR3.SNGPartPSDT3  --Bershinskaya_AV 04 02 2021 6000044744
+                             join MBAnalit VidName on VidName.Vid = @vidVED and VidName.Analit = doc.Kind
+                        WHERE
+                        
+                        doc.TypeID = @PSDBillID and 
+                        Storages.Kod not in ('NonReplArc','  ReplArch')
+                        
+                          -- фильтр по ВЭД
+                          and VidName.NameAn = 'ПСД. Накладная'
+                          
+                          -- связан с ЧПСД, у которой заполнена Date4
+                          --and PartsPSD.Date4 is not null                           --comm Bershinskaya_AV 04 02 2021 6000044744
+                          and (PartsPSD.Date4 is not null or ValR3.xrecid is null)   --Bershinskaya_AV 04 02 2021 6000044744
+                                                           
+                          -- не назначены права группе @GroupID или группе @CommonGroupID
+                          --
+                          --Semenov_KG: ДИ60000017866 12.12.2019
+                          and not (exists(select 1 from SBEDocAcc where EDocID = doc.XRecID and AccountID = @GroupID) or exists(select 1 from SBEDocAcc where EDocID = doc.XRecID and AccountID  = @CommonGroupID)
+                          )
+                          -- не отменен
+                          and doc.LifeStageName <> 'Отменен'
+                          
+                        union
+                        
+                        select
+                          distinct doc.XRecID
+                        from SBEDoc doc
+                             join SBEDocValR4 ValR4 on ValR4.EDocID = doc.XRecID
+                             
+                             -- есть связанная ЧПСД с заполненной датой передачи заказчику
+                             join MBAnalit PartsPSD on PartsPSD.Vid = @vidPartsPSD
+                                                        and ValR4.SNGPartPSDT4 = PartsPSD.Analit
+                                                        and PartsPSD.Date4 is not null
+                             
+                             join MBAnalit Storages on Storages.Vid = @vidEDS and doc.Storage = Storages.Analit
+                             
+                        where
+                          doc.TypeID = @IDTKED
+                          and Storages.Kod not in ('NonReplArc','  ReplArch')
+                          
+                          -- ВЭД <> 'ПСД. Объединенный документ ПСД'
+
+                          and doc.Kind not in (select a.Analit 
+                                       from   MBAnalit a
+                                       where  a.Vid = @vidVED
+                                          and a.NameAn <> 'ПСД. Объединенный документ ПСД')
+                          
+                          and doc.SNGYesNo = 'Y' -- Объединенный
+                          and doc.LifeStageName <> 'Отменен'
+                          --and (PartsPSD.LongString not like 'проектная документация%%' or PartsPSD.LongString not like 'типовое проектное решение%%' or PartsPSD.LongString not like 'проект межевания%%')
+                          and (PartsPSD.LongString not like 'проектная документация%%' and PartsPSD.LongString not like 'типовое проектное решение%%' and PartsPSD.LongString not like 'проект межевания%%' and PartsPSD.LongString not like 'разработка программ исследований%%' and PartsPSD.LongString not like 'проект санитарно-защитной зоны%%') 
+                        "; ArrayOf(SpecialistsGroup; PSDCommonUserGroup))
+                        //EditText(QueryAccess)
+  //END CHG Vakhrushev_DS ДИ№ 600038670 15.06.2018
+  else
+    Log.Add(Format('%s Не заполнена константа = %s'; ArrayOf(ServerDateTime(); 'SNGPSDManagingSpecialistsGroup')))
+    exit()    
+  endif
+  //END КР 6042707 06.08.2015
+  ResultQueryAccess = Sql(QueryAccess)
+  if ResultQueryAccess <<>> ''     
+    IDsAtt = CreateStringList()
+    i = 1
+    foreach elements in CSubString(ResultQueryAccess; '|')
+      //if CharPos(elements; ResultQuery) = 0
+        if i > MAXATT
+          //Формирование задачи
+          EDocID = CreateStringList()
+          EDocID.Delimiter = PIPELINE
+          Task = Tasks.CreateNew()
+          Attachments = Task.GetAttachments(false)
+          foreach IDAtt in IDsAtt
+            Attachments.Add(EDocuments.ObjectInfo(IDAtt))
+            EDocID.Add(IDAtt)
+          endforeach
+          KodTM = GetConstant('SNGPSDTMForConvertToPDF')
+          Task.LoadStandardRoute(KodTM)
+          Params = Task.WorkflowParams
+          Params.ValueByName("ToNewVersion").Value = "Н"
+          Params.ValueByName("LeadUser").Value = Edocuments.CurrentUser
+          Params.ValueByName('EDocIDAccess').Value = EDocID.DelimitedText
+          Params.ValueByName('AutomatedStart').Value = true
+          Task.SetupStandardRoute(false)
+          Task.Save()
+          Log.Add(Format('%s Задача по документам Накладная ПСД ID=%s'; ArrayOf(ServerDateTime(); Task.ID)))       
+          //Конец формирования задачи      
+          IDsAtt = CreateStringList()
+          i = 1
+        endif
+        IDsAtt.Add(elements)
+        i = i + 1
+      //endif
+    endforeach
+  
+    if IDsAtt.Count > 0
+      //Формирование задачи (оставшиеся док-ты)
+      EDocID = CreateStringList()
+      EDocID.Delimiter = PIPELINE
+      Task = Tasks.CreateNew()
+      Attachments = Task.GetAttachments(false)
+      foreach IDAtt in IDsAtt
+        Attachments.Add(EDocuments.ObjectInfo(IDAtt))
+        EDocID.Add(IDAtt)
+      endforeach
+      KodTM = GetConstant('SNGPSDTMForConvertToPDF')
+      Task.LoadStandardRoute(KodTM)
+      Params = Task.WorkflowParams
+      TaskID = Task.ID
+      Params.ValueByName("ToNewVersion").Value = "Н"
+      Params.ValueByName("LeadUser").Value = Edocuments.CurrentUser
+      Params.ValueByName('EDocIDAccess').Value = EDocID.DelimitedText
+      Params.ValueByName('AutomatedStart').Value = true
+      Task.SetupStandardRoute(false)
+      Task.Save()
+      Log.Add(Format('%s Задача по документам Накладная ПСД ID=%s'; ArrayOf(ServerDateTime(); Task.ID)))       
+      //Конец формирования задачи
+    endif
+  endif     
+  Task = nil
+  Attachments= nil
+  Params = nil
+  IDsAtt = nil
+//  WriteFile(LogFile; 'Y'; CR & Log.Text)  
+  //END КР 6041974 23.07.2015 
+  
+  //+Semenov_KG: ДИ600051353 28.12.2018 Версионность рабочей документации
+  // Установка документу "рабочей документации" стадии ЖЦ "отменен" при условии нвой версии части ПСД
+  QueryDocNewVersion = "
+  declare @VidPartPSD       int
+  declare @TypeEngGraphDocs int
+  declare @KindUnionDoc     int
+
+  set @VidPartPSD       = (select Vid from dbo.MBVidAn with(nolock) where Kod = 'SNGPSDPartsPSD')
+  set @TypeEngGraphDocs = (select TypeID from dbo.MBEDocType  with(nolock) where Kod = 'SNGPSDEngGraphDocs')
+  set @KindUnionDoc     = (select Analit from dbo.MBAnalit with(nolock) where Vid = (select Vid from dbo.MBVidAn with(nolock) where Kod = 'ВЭД') and NameAn = 'ПСД. Объединенный документ ПСД') 
+
+  select Doc.XRecID
+  --,PartPSD.NameAn, PartPSD.SNGLongString
+  from dbo.MBAnalit PartPSD with(nolock)
+  join dbo.SBEDocValR4 DocValR4 with(nolock) on DocValR4.SNGPartPSDT4 = PartPSD.Analit and DocValR4.TypeID = @TypeEngGraphDocs
+  join dbo.SBEDoc Doc with(nolock) on DocValR4.EDocID = Doc.XRecID and Doc.TypeID = @TypeEngGraphDocs
+  where
+    PartPSD.Vid = @VidPartPSD
+   and ((PartPSD.SNGLongString Like 'Рабочая документация%' or PartPSD.SNGLongString Like 'Рабочий проект%') and  (PartPSD.SNGLongString Like 'Дополнительные материалы%')) --Semenov_KG: ДИ6000029723 05.06.2020  --Bershinskaya_AV_25082021_6000041932 Рабочий проект
+   and PartPSD.YesNo2 = 'Д'
+   and PartPSD.Date4 is not Null
+   and Doc.Kind = @KindUnionDoc
+   and Doc.LifeStageName != 'Отменен' 
+  "
+  RezDocNewVersion = SQL(QueryDocNewVersion)
+  //EditText(RezDocNewVersion)
+  if RezDocNewVersion <<>> ''
+    //Формирование задачи (документы новой версии)
+    Task = Tasks.CreateNew()
+    Attachments = Task.GetAttachments(false)
+    foreach IDAtt in CSubString(RezDocNewVersion; PIPELINE)   IDsAtt
+      Attachments.Add(EDocuments.ObjectInfo(IDAtt))
+    endforeach
+    Task.LoadStandardRoute('DOCCANCEL')
+    Params = Task.WorkflowParams
+    TaskID = Task.ID
+    Task.SetupStandardRoute(false)
+    Task.Save()
+    Task.Start()
+    Log.Add(Format('%s Задача по установке ЖЦ "Отменен" докумкументам новой версии ID=%s'; ArrayOf(ServerDateTime(); Task.ID)))   
+  endif                                       
+  //-Semenov_KG: ДИ600051353 28.12.2018
+  
+  
+  //+Semenov_KG ДИ6000028304 управления правами структуры папок 'Проект экологического нормирования'
+    Script = Scripts.GetObjectByName('SNGPSDFindAndChangeRightDocsAndFоldersForProjectEcologeNormaly')
+    Script.Execute
+  //-Semenov_KG ДИ6000028304 управления правами 
+  
+  //bgn Bershinskaya_AV 21.12.2020 6000041932, ПСД Материалы по оценке возде на ОС
+  Script = Scripts.GetObjectByName('SNGPSDFindAndChangeFоldersRightsForOSMaterials')
+  Script.Execute
+  //end Bershinskaya_AV 21.12.2020 6000041932, ПСД Материалы по оценке возде на ОС
+  
+//bgn Bershinskaya_AV 30.07.2021 6000058332 ПСД Откат ДИ 6000046992
+//  //bgn Bershinskaya_av 19.04.2021 6000046992
+//  //Выдача прав на документы, включенные в накладную
+//  QueryDocNaklIDs = "
+//  --PSD/SNGPSDFindAndConversionDocsPSD/сценарий
+//  declare @TypeEngGraphDocs int = (select TypeID from dbo.MBEDocType  with(nolock) where Kod = 'SNGPSDEngGraphDocs')
+//  select Doc.XRecID, Doc.SNGProjectObject
+//    from dbo.SBEDoc Doc with(nolock)
+//   where Doc.TypeID = @TypeEngGraphDocs
+//     and Doc.LifeStageName = 'В разработке'
+//     and Doc.SNGYesNo8 = '%0:s'
+//     and Doc.SNGProjectObject is not null
+//  "
+//  
+//  QueryZak = "
+//  --PSD/SNGPSDFindAndConversionDocsPSD/сценарий
+//  declare @VidProjectObjects  int = (select Vid from dbo.MBVidAn with(nolock) where Kod = 'SNGPSDProjectObjects')
+//  declare @VidBusinessUnits   int = (select Vid from dbo.MBVidAn with(nolock) where Kod = 'SNGBusinessUnits')
+//  select distinct Zak.SNGID_SAP_HR
+//   from dbo.MBAnValR7 OPZak with(nolock)
+//   join dbo.MBAnalit Zak with(nolock) on Zak.Analit = OPZak.SNGBusinessUnitT7 and Zak.Vid = @VidBusinessUnits
+//  where OPZak.Analit = %0:s and OPZak.Vid = @VidProjectObjects and OPZak.SNGBusinessUnitT7 is not null"
+//  
+//  QueryPod = "
+//    --PSD/SNGPSDFindAndConversionDocsPSD/сценарий  
+//    declare @VidProjectObjects  int = (select Vid from dbo.MBVidAn with(nolock) where Kod = 'SNGPSDProjectObjects')
+//    declare @VidBusinessUnits   int = (select Vid from dbo.MBVidAn with(nolock) where Kod = 'SNGBusinessUnits')
+//    select distinct Zak.SNGID_SAP_HR
+//     from dbo.MBAnValR9 OPPod with(nolock)
+//     join dbo.MBAnalit Zak with(nolock) on Zak.Analit = OPPod.SNGBusinessUnitT9 and Zak.Vid = @VidBusinessUnits
+//    where OPPod.Analit = %0:s and OPPod.Vid = @VidProjectObjects and OPPod.SNGBusinessUnitT9 is not null"
+//    
+//  QueryBal = "
+//    --PSD/SNGPSDFindAndConversionDocsPSD/сценарий 
+//    declare @VidProjectObjects  int = (select Vid from dbo.MBVidAn with(nolock) where Kod = 'SNGPSDProjectObjects')
+//    declare @VidBusinessUnits   int = (select Vid from dbo.MBVidAn with(nolock) where Kod = 'SNGBusinessUnits')
+//    select distinct Zak.SNGID_SAP_HR
+//     from dbo.MBAnValR8 OPPod with(nolock)
+//     join dbo.MBAnalit Zak with(nolock) on Zak.Analit = OPPod.SNGBUnitT8 and Zak.Vid = @VidBusinessUnits
+//    where OPPod.Analit = %0:s and OPPod.Vid = @VidProjectObjects and OPPod.SNGBUnitT8 is not null"
+//
+//  ZakGrNameTempl = 'SNG_1030_00_%s_0020'
+//  OtvGrNameTempl = 'SNG_1030_00_%s_0019'
+//  PodGrNameTempl = 'SNG_1030_00_%s_0014'
+//  BalGrNameTempl = 'SNG_1030_00_%s_0039'
+//  
+//  QueryAccGrCheck = Format("--PSD/SNGPSDFindAndConversionDocsPSD/сценарий 
+//                            select top 1 1 
+//                              from SBEDocAcc acc
+//                              join dbo.MBAnalit gp with(nolock) on gp.vid = %0:s and gp.analit = acc.AccountID
+//                              and gp.dop = '%%1:s' 
+//                             where acc.EDocID = %%0:s"; ИдТипСпр('ГПЛ'))
+//  QueryGrID = Format("select top 1 analit from dbo.MBAnalit with(nolock) where vid = %0:s and dop = '%%0:s' and sost = 'Д'"; ИдТипСпр('ГПЛ'))
+//
+//  //Выдавать права на документы группам пользователей 
+//  AddRightsDocNaklIDs = SQL(Format(QueryDocNaklIDs; 'Y'))
+//  if AddRightsDocNaklIDs <<>> ''
+//    foreach str in CSubString(AddRightsDocNaklIDs; '|')
+//      GroupNameListString = CreateStringList()
+//      DocID = SubString(str;';';1)
+//      OPId = SubString(str;';';2)
+//      ZakBSCodes = SQL(Format(QueryZak; OPId);;',')
+//      foreach BS in CSubString(ZakBSCodes; ',')  
+//        ZakGrName = Format(ZakGrNameTempl; BS)
+//        AccGrCheck = SQL(Format(QueryAccGrCheck; ArrayOf(DocID; ZakGrName)))
+//        if AccGrCheck == ''
+//          if GroupNameListString.IndexOf(ZakGrName) = -1
+//            GroupNameListString.Add(ZakGrName)
+//          endif
+//        endif
+//        OtvGrName = Format(OtvGrNameTempl; BS)
+//        AccGrCheck = SQL(Format(QueryAccGrCheck; ArrayOf(DocID; OtvGrName))) 
+//        if AccGrCheck == ''
+//          if GroupNameListString.IndexOf(ZakGrName) = -1
+//            GroupNameListString.Add(ZakGrName)
+//          endif
+//        endif
+//      endforeach
+//      PodBSCodes = SQL(Format(QueryPod; OPId);;',')
+//      foreach BS in CSubString(PodBSCodes; ',')  
+//        PodGrName = Format(PodGrNameTempl; BS)
+//        AccGrCheck = SQL(Format(QueryAccGrCheck; ArrayOf(DocID; PodGrName)))
+//        if AccGrCheck == ''
+//          if GroupNameListString.IndexOf(PodGrName) = -1
+//            GroupNameListString.Add(PodGrName)
+//          endif
+//        endif 
+//      endforeach
+//      BalBSCodes = SQL(Format(QueryBal; OPId);;',')
+//      foreach BS in CSubString(BalBSCodes; ',')  
+//        BalGrName = Format(BalGrNameTempl; BS)
+//        AccGrCheck = SQL(Format(QueryAccGrCheck; ArrayOf(DocID; BalGrName)))
+//        if AccGrCheck == ''
+//          if GroupNameListString.IndexOf(BalGrName) = -1
+//            GroupNameListString.Add(BalGrName)
+//          endif 
+//        endif
+//      endforeach
+//      if GroupNameListString.Count > 0 
+//        DocInfo = EDocuments.ObjectInfo(DocID)
+//        AccessList = CreateStringList()
+//        AccessList.Delimiter = ';'
+//        foreach GroupName in GroupNameListString
+//          GroupID = SQL(Format(QueryGrID; GroupName)) 
+//          AccessList.Add('Read|' & GroupID)
+//        endforeach
+//        if Assigned(DocInfo)
+//          SNGORDStartEventChangeEDocAccessRights(DocInfo;; AccessList) 
+//          Log.Add(Format('%s Выданы права на накладную ИД = %s группам пользователей %s'; ArrayOf(ServerDateTime(); DocInfo.ID; GroupNameListString.DelimitedText)))  
+//        endif
+//        DocInfo = nil
+//      endif
+//    endforeach
+//  endif
+//
+//  //Отбирать права на документы у групп пользователей 
+//  DelRightsDocNaklIDs = SQL(Format(QueryDocNaklIDs; 'N'))
+//  if DelRightsDocNaklIDs <<>> ''
+//    foreach str in CSubString(DelRightsDocNaklIDs; '|')
+//      GroupNameListString = CreateStringList()
+//      DocID = SubString(str;';';1)
+//      OPId = SubString(str;';';2)
+//      ZakBSCodes = SQL(Format(QueryZak; OPId);;',')
+//      foreach BS in CSubString(ZakBSCodes; ',')  
+//        ZakGrName = Format(ZakGrNameTempl; BS)
+//        AccGrCheck = SQL(Format(QueryAccGrCheck; ArrayOf(DocID; ZakGrName)))
+//        if AccGrCheck <<>> ''
+//          if GroupNameListString.IndexOf(ZakGrName) = -1
+//            GroupNameListString.Add(ZakGrName)
+//          endif
+//        endif
+//        OtvGrName = Format(OtvGrNameTempl; BS)
+//        AccGrCheck = SQL(Format(QueryAccGrCheck; ArrayOf(DocID; OtvGrName))) 
+//        if AccGrCheck <<>> ''
+//          if GroupNameListString.IndexOf(ZakGrName) = -1
+//            GroupNameListString.Add(ZakGrName)
+//          endif
+//        endif
+//      endforeach
+//      PodBSCodes = SQL(Format(QueryPod; OPId);;',')
+//      foreach BS in CSubString(PodBSCodes; ',')  
+//        PodGrName = Format(PodGrNameTempl; BS)
+//        AccGrCheck = SQL(Format(QueryAccGrCheck; ArrayOf(DocID; PodGrName)))
+//        if AccGrCheck <<>> ''
+//          if GroupNameListString.IndexOf(PodGrName) = -1
+//            GroupNameListString.Add(PodGrName)
+//          endif
+//        endif 
+//      endforeach
+//      BalBSCodes = SQL(Format(QueryBal; OPId);;',')
+//      foreach BS in CSubString(BalBSCodes; ',')  
+//        BalGrName = Format(BalGrNameTempl; BS)
+//        AccGrCheck = SQL(Format(QueryAccGrCheck; ArrayOf(DocID; BalGrName)))
+//        if AccGrCheck <<>> ''
+//          if GroupNameListString.IndexOf(BalGrName) = -1
+//            GroupNameListString.Add(BalGrName)
+//          endif 
+//        endif
+//      endforeach
+//      if GroupNameListString.Count > 0
+//        DocInfo = EDocuments.ObjectInfo(DocID)
+//        GroupIDStringList = CreateStringList()
+//        GroupIDStringList.Delimiter = ','
+//        foreach GroupName in GroupNameListString
+//          GroupID = SQL(Format(QueryGrID; GroupName)) 
+//          GroupIDStringList.Add(GroupID)
+//        endforeach
+//        if Assigned(DocInfo)
+//          SNGORDStartEventChangeEDocAccessRights(DocInfo;;;;;;GroupIDStringList.DelimitedText)
+//          Log.Add(Format('%s Удалены права на накладную ИД = %s у групп пользователей %s'; ArrayOf(ServerDateTime(); DocInfo.ID; GroupNameListString.DelimitedText)))  
+//        endif
+//        DocInfo = nil
+//      endif
+//    endforeach
+//  endif
+//  GrList = nil
+//  GroupNameListString = nil
+
+  WriteFile(LogFile; 'Y'; CR & Log.Text)
+  //end Bershinskaya_av 19.04.2021 6000046992
+//end Bershinskaya_AV 30.07.2021 6000058332 ПСД Откат ДИ 6000046992 
+  
+      
